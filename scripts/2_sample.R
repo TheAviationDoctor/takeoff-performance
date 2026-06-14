@@ -128,6 +128,13 @@ labels <- c(
   "[100M–1B)"
 )
 
+# Deduplicate to one row per airport (first runway) for the airport-level
+# summaries and plots below; dt_pop/dt_smp hold one row per runway. Computed
+# once here and reused throughout, rather than re-deduplicating on every use.
+# [REV. 2026]
+dt_pop_u <- dt_pop[!duplicated(icao)]
+dt_smp_u <- dt_smp[!duplicated(icao)]
+
 # Describe the population's latitude variable (in °)
 summary(dt_pop$lat[!rev(duplicated(rev(dt_pop$icao)))])
 
@@ -190,7 +197,7 @@ dt_pop[which.min(dt_pop$lat), c(1L, 4L, 5L)]
 dt_smp[which.min(dt_smp$lat), c(1L, 4L, 5L)]
 
 # Bin the population airports (not runways) by passenger traffic and geo. zones
-dt_pop_binned <- dt_pop[!duplicated(dt_pop$icao), ] %>%
+dt_pop_binned <- dt_pop_u %>%
   mutate(
     bin = cut(
       x              = traffic,
@@ -211,7 +218,7 @@ dt_pop_binned <- dt_pop[!duplicated(dt_pop$icao), ] %>%
   )
 
 # Bin the sample airports (not runways) by passenger traffic and geo. zones
-dt_smp_binned <- dt_smp[!duplicated(dt_smp$icao), ] %>%
+dt_smp_binned <- dt_smp_u %>%
   mutate(
     bin = cut(
       x              = traffic,
@@ -249,14 +256,14 @@ dt_smp_binned %>%
 dt_pop_binned %>%
   group_by(geo) %>%
   dplyr::summarize(n = sum(traffic) / 10^6) %>%
-  mutate(per = n / sum(dt_pop[!duplicated(dt_pop$icao), ]$traffic) * 10^8) %>%
+  mutate(per = n / sum(dt_pop_u$traffic) * 10^8) %>%
   bind_rows(summarize_all(., ~ifelse(is.numeric(.), sum(.), "Total")))
 
 # Sum the sample traffic by geographical zone
 dt_smp_binned %>%
   group_by(geo) %>%
   dplyr::summarize(n = sum(traffic) / 10^6) %>%
-  mutate(per = n / sum(dt_smp[!duplicated(dt_smp$icao), ]$traffic) * 10^8) %>%
+  mutate(per = n / sum(dt_smp_u$traffic) * 10^8) %>%
   bind_rows(summarize_all(., ~ifelse(is.numeric(.), sum(.), "Total")))
 
 # ==============================================================================
@@ -290,7 +297,7 @@ ggplot() +
   scale_size_continuous(name = "traffic", guide = "none") +
   # Add the airports
   geom_point(
-    data    = dt_pop[!duplicated(dt_pop$icao), ],
+    data    = dt_pop_u,
     mapping = aes(x = lon, y = lat, color = traffic, size = traffic),
     shape   = 20L,
   ) +
@@ -301,15 +308,15 @@ ggplot() +
     yintercept = c(
       dt_pop$lat[which.max(dt_pop$lat)],                 # Max latitude
       dt_pop$lat[which.min(dt_pop$lat)],                 # Min latitude
-      mean(dt_pop[!duplicated(dt_pop$icao), ]$lat),      # Mean latitude
+      mean(dt_pop_u$lat),      # Mean latitude
       as.numeric(
         crossprod(
-          dt_pop[!duplicated(dt_pop$icao), ]$traffic,
-          dt_pop[!duplicated(dt_pop$icao), ]$lat
+          dt_pop_u$traffic,
+          dt_pop_u$lat
         ) /
-          sum(dt_pop[!duplicated(dt_pop$icao), ]$traffic)
+          sum(dt_pop_u$traffic)
       ),                                                 # PPA-weighted latitude
-      median(dt_pop[!duplicated(dt_pop$icao), ]$lat)     # Median latitude
+      median(dt_pop_u$lat)     # Median latitude
     )
   ) +
   # Add parallel labels
@@ -355,14 +362,14 @@ ggplot() +
       "Mean latitude ",
       sprintf(
         fmt = "%.2f",
-        round(x = mean(dt_pop[!duplicated(dt_pop$icao), ]$lat), digits = 2L)
+        round(x = mean(dt_pop_u$lat), digits = 2L)
       ),
       "°",
       sep = ""
     ),
     size  = 1.5,
     x     = 179L,
-    y     = mean(dt_pop[!duplicated(dt_pop$icao), ]$lat) - 1.5
+    y     = mean(dt_pop_u$lat) - 1.5
   ) +
   geom_text(
     data  = world,
@@ -374,10 +381,10 @@ ggplot() +
         fmt = "%.2f",
         round(
           x      = as.numeric(crossprod(
-            dt_pop[!duplicated(dt_pop$icao), ]$traffic,
-            dt_pop[!duplicated(dt_pop$icao), ]$lat
+            dt_pop_u$traffic,
+            dt_pop_u$lat
             ) /
-            sum(dt_pop[!duplicated(dt_pop$icao), ]$traffic)
+            sum(dt_pop_u$traffic)
           ),
           digits = 2L)
       ),
@@ -388,10 +395,10 @@ ggplot() +
     x     = 179L,
     y     = as.numeric(
       crossprod(
-        dt_pop[!duplicated(dt_pop$icao), ]$traffic,
-        dt_pop[!duplicated(dt_pop$icao), ]$lat
+        dt_pop_u$traffic,
+        dt_pop_u$lat
       ) /
-      sum(dt_pop[!duplicated(dt_pop$icao), ]$traffic)
+      sum(dt_pop_u$traffic)
     ) - 1.5
   ) +
   geom_text(
@@ -402,14 +409,14 @@ ggplot() +
       "Median latitude ",
       sprintf(
         fmt = "%.2f",
-        round(x = median(dt_pop[!duplicated(dt_pop$icao), ]$lat), digits = 2L)
+        round(x = median(dt_pop_u$lat), digits = 2L)
       ),
       "°",
       sep = ""
     ),
     size  = 1.5,
     x     = 179L,
-    y     = median(dt_pop[!duplicated(dt_pop$icao), ]$lat) + 2L
+    y     = median(dt_pop_u$lat) + 2L
   ) +
   geom_text(
     data  = world,
@@ -574,7 +581,7 @@ ggplot() +
   scale_size_continuous(name = "traffic", guide = "none") +
   # Add the airports
   geom_point(
-    data    = dt_smp[!duplicated(dt_smp$icao), ],
+    data    = dt_smp_u,
     mapping = aes(x = lon, y = lat, color = traffic, size = traffic),
     shape   = 20L,
   ) +
@@ -585,15 +592,15 @@ ggplot() +
     yintercept = c(
       dt_smp$lat[which.max(dt_smp$lat)],                 # Max latitude
       dt_smp$lat[which.min(dt_smp$lat)],                 # Min latitude
-      mean(dt_smp[!duplicated(dt_smp$icao), ]$lat),      # Mean latitude
+      mean(dt_smp_u$lat),      # Mean latitude
       as.numeric(
         crossprod(
-          dt_smp[!duplicated(dt_smp$icao), ]$traffic,
-          dt_smp[!duplicated(dt_smp$icao), ]$lat
+          dt_smp_u$traffic,
+          dt_smp_u$lat
         ) /
-          sum(dt_smp[!duplicated(dt_smp$icao), ]$traffic)
+          sum(dt_smp_u$traffic)
       ),                                                 # PPA-weighted latitude
-      median(dt_smp[!duplicated(dt_smp$icao), ]$lat)     # Median latitude
+      median(dt_smp_u$lat)     # Median latitude
     )
   ) +
   # Add parallel labels
@@ -639,14 +646,14 @@ ggplot() +
       "Mean latitude ",
       sprintf(
         fmt = "%.2f",
-        round(x = mean(dt_smp[!duplicated(dt_smp$icao), ]$lat), digits = 2L)
+        round(x = mean(dt_smp_u$lat), digits = 2L)
       ),
       "°",
       sep = ""
     ),
     size  = 1.5,
     x     = 179L,
-    y     = mean(dt_smp[!duplicated(dt_smp$icao), ]$lat) - 1.5
+    y     = mean(dt_smp_u$lat) - 1.5
   ) +
   geom_text(
     data  = world,
@@ -658,10 +665,10 @@ ggplot() +
         fmt = "%.2f",
         round(
           x      = as.numeric(crossprod(
-            dt_smp[!duplicated(dt_smp$icao), ]$traffic,
-            dt_smp[!duplicated(dt_smp$icao), ]$lat
+            dt_smp_u$traffic,
+            dt_smp_u$lat
           ) /
-            sum(dt_smp[!duplicated(dt_smp$icao), ]$traffic)
+            sum(dt_smp_u$traffic)
           ),
           digits = 2L)
       ),
@@ -672,10 +679,10 @@ ggplot() +
     x     = 179L,
     y     = as.numeric(
       crossprod(
-        dt_smp[!duplicated(dt_smp$icao), ]$traffic,
-        dt_smp[!duplicated(dt_smp$icao), ]$lat
+        dt_smp_u$traffic,
+        dt_smp_u$lat
       ) /
-        sum(dt_smp[!duplicated(dt_smp$icao), ]$traffic)
+        sum(dt_smp_u$traffic)
     ) - 1.35
   ) +
   geom_text(
@@ -686,14 +693,14 @@ ggplot() +
       "Median latitude ",
       sprintf(
         fmt = "%.2f",
-        round(x = median(dt_smp[!duplicated(dt_smp$icao), ]$lat), digits = 2L)
+        round(x = median(dt_smp_u$lat), digits = 2L)
       ),
       "°",
       sep = ""
     ),
     size  = 1.5,
     x     = 179L,
-    y     = median(dt_smp[!duplicated(dt_smp$icao), ]$lat) + 2L
+    y     = median(dt_smp_u$lat) + 2L
   ) +
   geom_text(
     data  = world,
@@ -834,14 +841,14 @@ ggsave(
 # Build a histogram of airports by latitude
 ggplot() +
   geom_histogram(
-    mapping  = aes(x = dt_pop[!duplicated(dt_pop$icao), ]$lat),
+    mapping  = aes(x = dt_pop_u$lat),
     fill     = "black",
     alpha    = .5,
     binwidth = 10L,
     na.rm    = TRUE
   ) +
   geom_histogram(
-    mapping  = aes(x = dt_smp[!duplicated(dt_smp$icao), ]$lat),
+    mapping  = aes(x = dt_smp_u$lat),
     fill     = "black",
     alpha    = .5,
     binwidth = 10L,
@@ -875,8 +882,8 @@ ggsave(
 ggplot() +
   geom_histogram(
     mapping  = aes(
-      x      = dt_pop[!duplicated(dt_pop$icao), ]$lat,
-      weight = dt_pop[!duplicated(dt_pop$icao), ]$traffic
+      x      = dt_pop_u$lat,
+      weight = dt_pop_u$traffic
     ),
     fill     = "black",
     alpha    = 0.5,
@@ -885,8 +892,8 @@ ggplot() +
   ) +
   geom_histogram(
     mapping  = aes(
-      x      = dt_smp[!duplicated(dt_smp$icao), ]$lat,
-      weight = dt_smp[!duplicated(dt_smp$icao), ]$traffic
+      x      = dt_smp_u$lat,
+      weight = dt_smp_u$traffic
     ),
     fill     = "black",
     alpha    = 0.5,
@@ -928,8 +935,8 @@ ggsave(
 res <- "course"
 
 # Prepare the population data
-df_kgc_pop <- dt_pop[
-  !duplicated(dt_pop$icao),
+df_kgc_pop <- dt_pop_u[
+  ,
   c("icao", "lon", "lat", "traffic")
 ] %>%
   mutate(rndCoord.lon = RoundCoordinates(lon, res = res, latlong = "lon")) %>%
@@ -947,8 +954,8 @@ df_kgc_pop <- df_kgc_pop %>%
   dplyr::summarize(pop.airports = n(), pop.traffic = sum(traffic))
 
 # Prepare the sample data
-df_kgc_smp <- dt_smp[
-  !duplicated(dt_smp$icao),
+df_kgc_smp <- dt_smp_u[
+  ,
   c("icao", "lon", "lat", "traffic")
 ] %>%
   mutate(rndCoord.lon = RoundCoordinates(lon, res = res, latlong = "lon")) %>%
