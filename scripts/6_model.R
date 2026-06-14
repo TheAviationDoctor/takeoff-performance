@@ -12,6 +12,14 @@
 # ==============================================================================
 
 # ==============================================================================
+# 0 Load the required libraries
+# ==============================================================================
+
+# This file is sourced by 7_calibrate.R and 8_simulate.R; attach the packages it
+# uses directly so it does not rely on attachments made by the calling script.
+library(data.table) # frollmean()/frollsum() and the DT[, ...] query syntax
+
+# ==============================================================================
 # 1 Define a function to calculate the liftoff speed based on:
 # cllof = dimensionless lift coefficient at liftoff
 # g     = gravitational acceleration constant in m/s²
