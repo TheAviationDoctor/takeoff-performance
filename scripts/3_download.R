@@ -33,7 +33,7 @@ cat("\014")
 # ==============================================================================
 
 # Query the ESGF server
-nc_files <-
+nc_files <- rbind(
   # Single query: all five variables share the 6hrPt (instantaneous) table.
   # huss (specific humidity) replaces hurs (relative humidity): huss is
   # co-published with ps/tas/uas/vas at 6hrPt so no temporal realignment needed.
@@ -50,7 +50,25 @@ nc_files <-
     type       = "File",
     limit      = 10000L,
     data_node  = NULL
+  ),
+  # Fixed orography (orog, fx table) for the field-elevation surface-pressure
+  # correction in 5_transform.R. orography is time-invariant, so the field is
+  # not re-published per scenario: take the single CMIP/historical fx field.
+  esgf_query(
+    activity   = "CMIP",
+    variable   = c("orog"),
+    frequency  = c("fx"),
+    experiment = c("historical"),
+    source     = "MPI-ESM1-2-HR",
+    variant    = "r1i1p1f1",
+    replica    = FALSE,
+    latest     = TRUE,
+    resolution = "100 km",
+    type       = "File",
+    limit      = 10000L,
+    data_node  = NULL
   )
+)
 
 # ==============================================================================
 # 2 Parse the results
@@ -77,6 +95,7 @@ nc_files %>%
   group_by(experiment_id) %>%
   summarize(
     huss = sum(variable_id == "huss"),
+    orog = sum(variable_id == "orog"),
     ps   = sum(variable_id == "ps"),
     tas  = sum(variable_id == "tas"),
     uas  = sum(variable_id == "uas"),

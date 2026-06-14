@@ -104,8 +104,12 @@ df_geo <- subset(
   x = df_geo,
   type %in% c("small_airport", "medium_airport", "large_airport") &
     icao != "" & nchar(iata) == 3L,
-  select = c("name", "lat", "lon", "icao", "iata")
+  select = c("name", "lat", "lon", "elev", "icao", "iata")
 )
+
+# Convert the airport field elevation from feet to meters (z_field for the
+# surface-pressure elevation correction applied in 5_transform.R) [REV. 2026]
+df_geo$elev <- df_geo$elev * sim$ft_to_m
 
 # Count the remaining observations
 nrow(df_geo)
@@ -482,6 +486,8 @@ fn_sql_qry(
     name    CHAR(", max(nchar(df_pop$name)), ") NOT NULL,
     lat     FLOAT NOT NULL,
     lon     FLOAT NOT NULL,
+    elev    FLOAT NOT NULL,
+    orog    FLOAT NULL DEFAULT NULL,
     zone    CHAR(11) NOT NULL,
     rwy     CHAR(5) NOT NULL,
     toda    SMALLINT NOT NULL,

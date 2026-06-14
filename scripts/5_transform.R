@@ -46,6 +46,8 @@ dt_smp <- fn_sql_qry(
       lat,
       lon,
       zone,
+      elev,
+      orog,
       rwy,
       toda
     FROM ",
@@ -189,7 +191,31 @@ fn_transform <- function(apt) {
   )
 
   # ============================================================================
-  # 3.2 Calculate the air density of moist air at the current airport
+  # 3.2 Correct surface pressure to the airport's field elevation [REV. 2026]
+  # The model reports ps at its grid-cell mean elevation (z_model = orog), which
+  # for coarse ~100 km cells can differ substantially from an airport's true
+  # field elevation (z_field = elev). Reduce ps hypsometrically from z_model to
+  # z_field so density (and the thrust model's pressure ratio) reflect the
+  # airport, not the grid cell. This corrects a one-directional bias that is
+  # largest at elevated airports (JNB, MEX, DEN, BOG, ADD, ...). Both elevations
+  # are in metres; elev is set in 1_population.R, orog in 4_import.R.
+  # ============================================================================
+
+  # Field and model elevations for this airport in m (constant across its rows)
+  z_field <- dt_smp[icao == apt, elev][1L]
+  z_model <- dt_smp[icao == apt, orog][1L]
+
+  # Hypsometric reduction of ps from the model elevation to the field elevation
+  set(
+    x     = dt_nc,
+    j     = "ps",
+    value = dt_nc[, ps] *
+      ((dt_nc[, tas] - sim$isa_lap * (z_field - z_model)) / dt_nc[, tas])^
+        (sim$g / (sim$rsp_air * sim$isa_lap))
+  )
+
+  # ============================================================================
+  # 3.3 Calculate the air density of moist air at the current airport
   # ============================================================================
 
   # Inform the log file
@@ -212,7 +238,7 @@ fn_transform <- function(apt) {
   )
 
   # ============================================================================
-  # 3.2 Air density from specific humidity (huss) [REV. 2026]
+  # 3.3.1 Air density from specific humidity (huss) [REV. 2026]
   # huss is co-sampled with ps/tas/uas/vas in the 6hrPt table, so no temporal
   # realignment is needed and the water-vapour partial pressure follows directly
   # from huss and ps — no relative humidity, no saturation-pressure polynomial,
@@ -236,7 +262,7 @@ fn_transform <- function(apt) {
   )
 
   # ============================================================================
-  # 3.3 Merge with the list of runways
+  # 3.4 Merge with the list of runways
   # ============================================================================
 
   # Extract the list of runways for the current airport
@@ -265,7 +291,7 @@ fn_transform <- function(apt) {
   )
 
   # ============================================================================
-  # 3.4 Calculate the wind vector for each runway
+  # 3.5 Calculate the wind vector for each runway
   # ============================================================================
 
   # Calculate the airport's wind speed in m/s
@@ -291,7 +317,7 @@ fn_transform <- function(apt) {
   dt_nc <- dt_nc[, .SD[which.max(hdw)], by = .(obs, ssp)]
 
   # ============================================================================
-  # 3.4 Write the data in wide format to the database
+  # 3.6 Write the data in wide format to the database
   # ============================================================================
 
   # Inform the log file

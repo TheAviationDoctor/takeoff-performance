@@ -96,14 +96,62 @@ setkey(x = dt_smp, cols = icao, verbose = TRUE)
 # List the NetCDF files from which to extract the airports' climatic conditions
 nc_files <- list.files(path = dir$cli, pattern = "\\.nc$", full.names = TRUE)
 
+# Separate the fixed orography file (orog, no time dimension) from the time-
+# varying climate files: it is handled once in section 3 below, not by the
+# per-file parallel loop, which assumes a time series. [REV. 2026]
+orog_file <- nc_files[ grepl(pattern = "^orog_", x = basename(nc_files))]
+nc_files  <- nc_files[!grepl(pattern = "^orog_", x = basename(nc_files))]
+
 # ==============================================================================
-# 3 Parse the NetCDF files
+# 3 Extract the climate model orography at each airport [REV. 2026]
+# The fixed orography field (orog) gives the model's surface elevation (z_model)
+# in each grid cell. 5_transform.R needs it to reduce the model surface pressure
+# to each airport's true field elevation. We extract one nearest-cell value per
+# sample airport and store it in the population table's orog column.
+# ==============================================================================
+
+if (length(orog_file) == 1L) {
+
+  # Open the orography file
+  nc <- ncdf4::nc_open(filename = orog_file, write = FALSE, readunlim = FALSE)
+
+  # Read the latitude and longitude vectors
+  nc_lat <- ncdf4::ncvar_get(nc = nc, varid = "lat")
+  nc_lon <- ncdf4::ncvar_get(nc = nc, varid = "lon")
+
+  # Recode the longitude vector from 0°-360° to -180°-180°
+  nc_lon <- ((nc_lon + 180L) %% 360L) - 180L
+
+  # Read the 2D orography array (surface altitude in m)
+  nc_arr <- ncdf4::ncvar_get(nc = nc, varid = "orog")
+
+  # Release the NetCDF file from memory
+  ncdf4::nc_close(nc = nc)
+
+  # Extract the nearest grid cell's orography for each sample airport and write
+  # it to that airport's orog column in the population table
+  for (x in as.vector(dt_smp$icao)) {
+    lat_idx <- which.min(abs(nc_lat - dt_smp[icao == x, lat]))
+    lon_idx <- which.min(abs(nc_lon - dt_smp[icao == x, lon]))
+    fn_sql_qry(
+      statement = paste0(
+        "UPDATE ", tolower(dat$pop),
+        " SET orog = ", nc_arr[lon_idx, lat_idx],
+        " WHERE icao = '", x, "';"
+      )
+    )
+  }
+
+} # End orography extraction
+
+# ==============================================================================
+# 4 Parse the NetCDF files
 # ==============================================================================
 
 fn_import <- function(nc_file) {
 
   # ============================================================================
-  # 3.1 Parse the current NetCDF file
+  # 4.1 Parse the current NetCDF file
   # ============================================================================
 
   # Offset the start of each worker by a random duration to spread disk I/O load
@@ -165,7 +213,7 @@ fn_import <- function(nc_file) {
   ncdf4::nc_close(nc = nc)
 
   # ============================================================================
-  # 3.2 Plot the climate model's spatial grid cell
+  # 4.2 Plot the climate model's spatial grid cell
   # ============================================================================
 
   # Check if the plot already exists
@@ -258,7 +306,7 @@ fn_import <- function(nc_file) {
   } # End plot creation
 
   # ============================================================================
-  # 3.2 Extract the climatic variables for each sample airport (inner loop)
+  # 4.3 Extract the climatic variables for each sample airport (inner loop)
   # ============================================================================
 
   dt_nc <- lapply(
@@ -302,7 +350,7 @@ fn_import <- function(nc_file) {
   ) # End lapply
 
   # ============================================================================
-  # 3.3 Consolidate the outputs and write them to the database
+  # 4.4 Consolidate the outputs and write them to the database
   # ============================================================================
 
   # Consolidate the data tables
@@ -326,7 +374,7 @@ fn_import <- function(nc_file) {
 } # End of the fn_import function
 
 # ==============================================================================
-# 4 Handle the parallel computation
+# 5 Handle the parallel computation
 # ==============================================================================
 
 # Distribute the NetCDF files across the CPU cores
@@ -348,7 +396,7 @@ fn_par_lapply(
 )
 
 # ==============================================================================
-# 5 Index the database table
+# 6 Index the database table
 # ==============================================================================
 
 fn_sql_qry(
@@ -361,7 +409,7 @@ fn_sql_qry(
 )
 
 # ==============================================================================
-# 6 Housekeeping
+# 7 Housekeeping
 # ==============================================================================
 
 # Stop the script timer
