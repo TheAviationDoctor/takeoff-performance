@@ -1029,7 +1029,7 @@ fwrite(
 )
 
 # Plot the infeasible share over time, by climate zone and SSP
-(ggplot(
+ggplot(
   data    = dt_inf,
   mapping = aes(x = year, y = share_infeas, color = ssp)
 ) +
@@ -1038,17 +1038,20 @@ fwrite(
   scale_y_continuous("Share of infeasible takeoffs", labels = scales::percent) +
   scale_color_viridis(discrete = TRUE, name = "SSP") +
   facet_wrap(~zone, ncol = 1L, scales = "free_y") +
-  theme_light()) %>%
-  ggsave(
-    filename = "9_infeasible_share_by_zone.png",
-    device   = "png",
-    path     = "plots",
-    scale    = 1L,
-    width    = 6L,
-    height   = NA,
-    units    = "in",
-    dpi      = "retina"
-  )
+  theme_light()
+
+# Save the plot
+ggsave(
+  filename = "9_infeasible_share_by_zone.png",
+  plot     = last_plot(),
+  device   = "png",
+  path     = "plots",
+  scale    = 1L,
+  width    = 6L,
+  height   = NA,
+  units    = "in",
+  dpi      = "retina"
+)
 
 # ==============================================================================
 # 2.2 Summarize takeoff outcomes by airport
