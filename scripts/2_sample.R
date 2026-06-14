@@ -273,569 +273,304 @@ dt_smp_binned %>%
 # Define the world object from the Natural Earth package
 world <- rnaturalearth::ne_countries(scale = "small", returnclass = "sf")
 
-# Plot the population airports onto a world map
-ggplot() +
-  geom_sf(data = world, fill = "gray") +
-  coord_sf(expand = FALSE) +
-  # Define the scales
-  scale_x_continuous(breaks = c(-180L, 180L)) +
-  scale_y_continuous(
-    breaks = unique(unlist(x = geo, use.names = FALSE)),
-    limits = c(-90L, 90L)
-  ) +
-  scale_color_viridis(
-    breaks    = breaks,
-    direction = -1L,
-    labels    = trans_format(trans = "log10", format = math_format(10^.x)),
-    limits    = c(
-      dt_pop$traffic[which.min(dt_pop$traffic)],
-      dt_pop$traffic[which.max(dt_pop$traffic)]
-    ),
-    name      = "PPA",
-    trans     = "log"
-  ) +
-  scale_size_continuous(name = "traffic", guide = "none") +
-  # Add the airports
-  geom_point(
-    data    = dt_pop_u,
-    mapping = aes(x = lon, y = lat, color = traffic, size = traffic),
-    shape   = 20L,
-  ) +
-  # Add parallels
-  geom_hline(
-    color      = "black",
-    linewidth  = .25,
-    yintercept = c(
-      dt_pop$lat[which.max(dt_pop$lat)],                 # Max latitude
-      dt_pop$lat[which.min(dt_pop$lat)],                 # Min latitude
-      mean(dt_pop_u$lat),      # Mean latitude
-      as.numeric(
-        crossprod(
-          dt_pop_u$traffic,
-          dt_pop_u$lat
-        ) /
-          sum(dt_pop_u$traffic)
-      ),                                                 # PPA-weighted latitude
-      median(dt_pop_u$lat)     # Median latitude
-    )
-  ) +
-  # Add parallel labels
-  geom_text(
-    data  = world,
-    color = "black",
-    hjust = 1L,
-    label = paste(
-      "Max. latitude ",
-      sprintf(
-        fmt = "%.2f",
-        round(x = dt_pop$lat[which.max(dt_pop$lat)], digits = 2L)
-      ),
-      "°",
-      sep = ""
-    ),
-    size  = 1.5,
-    x     = 179L,
-    y     = dt_pop$lat[which.max(dt_pop$lat)] + 2L
-  ) +
-  geom_text(
-    data  = world,
-    color = "black",
-    hjust = 1L,
-    label = paste(
-      "Min. latitude ",
-      sprintf(
-        fmt = "%.2f",
-        round(x = dt_pop$lat[which.min(dt_pop$lat)], digits = 2L)
-      ),
-      "°",
-      sep = ""
-    ),
-    size  = 1.5,
-    x     = 179L,
-    y     = dt_pop$lat[which.min(dt_pop$lat)] + 2L
-  ) +
-  geom_text(
-    data  = world,
-    color = "black",
-    hjust = 1L,
-    label = paste(
-      "Mean latitude ",
-      sprintf(
-        fmt = "%.2f",
-        round(x = mean(dt_pop_u$lat), digits = 2L)
-      ),
-      "°",
-      sep = ""
-    ),
-    size  = 1.5,
-    x     = 179L,
-    y     = mean(dt_pop_u$lat) - 1.5
-  ) +
-  geom_text(
-    data  = world,
-    color = "black",
-    hjust = 1L,
-    label = paste(
-      "PPA-weighted mean latitude ",
-      sprintf(
-        fmt = "%.2f",
-        round(
-          x      = as.numeric(crossprod(
-            dt_pop_u$traffic,
-            dt_pop_u$lat
-            ) /
-            sum(dt_pop_u$traffic)
-          ),
-          digits = 2L)
-      ),
-      "°",
-      sep = ""
-    ),
-    size  = 1.5,
-    x     = 179L,
-    y     = as.numeric(
-      crossprod(
-        dt_pop_u$traffic,
-        dt_pop_u$lat
-      ) /
-      sum(dt_pop_u$traffic)
-    ) - 1.5
-  ) +
-  geom_text(
-    data  = world,
-    color = "black",
-    hjust = 1L,
-    label = paste(
-      "Median latitude ",
-      sprintf(
-        fmt = "%.2f",
-        round(x = median(dt_pop_u$lat), digits = 2L)
-      ),
-      "°",
-      sep = ""
-    ),
-    size  = 1.5,
-    x     = 179L,
-    y     = median(dt_pop_u$lat) + 2L
-  ) +
-  geom_text(
-    data  = world,
-    color = "gray",
-    hjust = 0L,
-    label = "Arctic circle",
-    size  = 1.5,
-    x     = -179L,
-    y     = unique(unlist(x = geo, use.names = FALSE))[5] - 2L
-  ) +
-  geom_text(
-    data  = world,
-    color = "gray",
-    hjust = 0L,
-    label = "Tropic of Cancer",
-    size  = 1.5,
-    x     = -179L,
-    y     = unique(unlist(x = geo, use.names = FALSE))[4] - 2L
-  ) +
-  geom_text(
-    data  = world,
-    color = "gray",
-    hjust = 0L,
-    label = "Tropic of Capricorn",
-    size  = 1.5,
-    x     = -179L,
-    y     = unique(unlist(x = geo, use.names = FALSE))[3] - 2L
-  ) +
-  geom_text(
-    data  = world,
-    color = "gray",
-    hjust = 0L,
-    label = "Antarctic circle",
-    size  = 1.5,
-    x     = -179L,
-    y     = unique(unlist(x = geo, use.names = FALSE))[2] - 2L
-  ) +
-  # Add zonal labels
-  geom_text(
-    angle = 90L,
-    data  = world,
-    color = "gray",
-    hjust = .5,
-    label = unique(names(geo))[1],
-    size  = 2.5,
-    x     = -175L,
-    y     = mean(
-      c(
-        unique(unlist(x = geo, use.names = FALSE))[1],
-        unique(unlist(x = geo, use.names = FALSE))[2]
-      )
-    )
-  ) +
-  geom_text(
-    angle = 90L,
-    data  = world,
-    color = "gray",
-    hjust = .5,
-    label = unique(names(geo))[2],
-    size  = 2.5,
-    x     = -175L,
-    y     = mean(
-      c(
-        unique(unlist(x = geo, use.names = FALSE))[2],
-        unique(unlist(x = geo, use.names = FALSE))[3]
-      )
-    )
-  ) +
-  geom_text(
-    angle = 90L,
-    data  = world,
-    color = "gray",
-    hjust = .5,
-    label = unique(names(geo))[3],
-    size  = 2.5,
-    x     = -175L,
-    y     = mean(
-      c(
-        unique(unlist(x = geo, use.names = FALSE))[3],
-        unique(unlist(x = geo, use.names = FALSE))[4]
-      )
-    )
-  ) +
-  geom_text(
-    angle = 90L,
-    data  = world,
-    color = "gray",
-    hjust = .5,
-    label = unique(names(geo))[2],
-    size  = 2.5,
-    x     = -175L,
-    y     = mean(
-      c(
-        unique(unlist(x = geo, use.names = FALSE))[4],
-        unique(unlist(x = geo, use.names = FALSE))[5]
-      )
-    )
-  ) +
-  geom_text(
-    angle = 90L,
-    data  = world,
-    color = "gray",
-    hjust = .5,
-    label = unique(names(geo))[1],
-    size  = 2.5,
-    x     = -175L,
-    y     = mean(
-      c(
-        unique(unlist(x = geo, use.names = FALSE))[5],
-        unique(unlist(x = geo, use.names = FALSE))[6]
-      )
-    )
-  ) +
-  theme_light() +
-  theme(
-    axis.title      = element_blank(),
-    axis.text       = element_blank(),
-    axis.ticks      = element_blank(),
-    legend.key.size = unit(.2, "in"),
-    legend.title    = element_text(size = 5L),
-    legend.text     = element_text(size = 5L),
-    plot.margin     = margin(-.8, 0L, -.8, 0L, "in")
-  )
-
 # Find the aspect ratio of the map
 ar <- tmaptools::get_asp_ratio(world)
 
-# Save the plot
-ggsave(
+# ==============================================================================
+# Build an airport world map and save it to disk. Parameters:
+# dt       = runway-level data (one row per runway), for the latitude extremes
+# dt_u     = airport-level data (one row per airport), for the points and means
+# filename = name of the PNG file to write to the plots directory
+# ppa_off  = vertical offset (in °) for the PPA-weighted mean latitude label
+# The color scale is intentionally fixed to the population's traffic range
+# (dt_pop) in both maps so they remain visually comparable.
+# ==============================================================================
+
+fn_plot_airport_map <- function(dt, dt_u, filename, ppa_off) {
+
+  # PPA-weighted mean latitude (reused for the parallel and its label)
+  ppa_lat <- as.numeric(
+    crossprod(dt_u$traffic, dt_u$lat) / sum(dt_u$traffic)
+  )
+
+  # Plot the airports onto a world map
+  p <- ggplot() +
+    geom_sf(data = world, fill = "gray") +
+    coord_sf(expand = FALSE) +
+    # Define the scales
+    scale_x_continuous(breaks = c(-180L, 180L)) +
+    scale_y_continuous(
+      breaks = unique(unlist(x = geo, use.names = FALSE)),
+      limits = c(-90L, 90L)
+    ) +
+    scale_color_viridis(
+      breaks    = breaks,
+      direction = -1L,
+      labels    = trans_format(trans = "log10", format = math_format(10^.x)),
+      limits    = c(
+        dt_pop$traffic[which.min(dt_pop$traffic)],
+        dt_pop$traffic[which.max(dt_pop$traffic)]
+      ),
+      name      = "PPA",
+      trans     = "log"
+    ) +
+    scale_size_continuous(name = "traffic", guide = "none") +
+    # Add the airports
+    geom_point(
+      data    = dt_u,
+      mapping = aes(x = lon, y = lat, color = traffic, size = traffic),
+      shape   = 20L,
+    ) +
+    # Add parallels
+    geom_hline(
+      color      = "black",
+      linewidth  = .25,
+      yintercept = c(
+        dt$lat[which.max(dt$lat)],                       # Max latitude
+        dt$lat[which.min(dt$lat)],                       # Min latitude
+        mean(dt_u$lat),                                  # Mean latitude
+        ppa_lat,                                         # PPA-weighted latitude
+        median(dt_u$lat)                                 # Median latitude
+      )
+    ) +
+    # Add parallel labels
+    geom_text(
+      data  = world,
+      color = "black",
+      hjust = 1L,
+      label = paste(
+        "Max. latitude ",
+        sprintf(
+          fmt = "%.2f",
+          round(x = dt$lat[which.max(dt$lat)], digits = 2L)
+        ),
+        "°",
+        sep = ""
+      ),
+      size  = 1.5,
+      x     = 179L,
+      y     = dt$lat[which.max(dt$lat)] + 2L
+    ) +
+    geom_text(
+      data  = world,
+      color = "black",
+      hjust = 1L,
+      label = paste(
+        "Min. latitude ",
+        sprintf(
+          fmt = "%.2f",
+          round(x = dt$lat[which.min(dt$lat)], digits = 2L)
+        ),
+        "°",
+        sep = ""
+      ),
+      size  = 1.5,
+      x     = 179L,
+      y     = dt$lat[which.min(dt$lat)] + 2L
+    ) +
+    geom_text(
+      data  = world,
+      color = "black",
+      hjust = 1L,
+      label = paste(
+        "Mean latitude ",
+        sprintf(
+          fmt = "%.2f",
+          round(x = mean(dt_u$lat), digits = 2L)
+        ),
+        "°",
+        sep = ""
+      ),
+      size  = 1.5,
+      x     = 179L,
+      y     = mean(dt_u$lat) - 1.5
+    ) +
+    geom_text(
+      data  = world,
+      color = "black",
+      hjust = 1L,
+      label = paste(
+        "PPA-weighted mean latitude ",
+        sprintf(
+          fmt = "%.2f",
+          round(x = ppa_lat, digits = 2L)
+        ),
+        "°",
+        sep = ""
+      ),
+      size  = 1.5,
+      x     = 179L,
+      y     = ppa_lat + ppa_off
+    ) +
+    geom_text(
+      data  = world,
+      color = "black",
+      hjust = 1L,
+      label = paste(
+        "Median latitude ",
+        sprintf(
+          fmt = "%.2f",
+          round(x = median(dt_u$lat), digits = 2L)
+        ),
+        "°",
+        sep = ""
+      ),
+      size  = 1.5,
+      x     = 179L,
+      y     = median(dt_u$lat) + 2L
+    ) +
+    geom_text(
+      data  = world,
+      color = "gray",
+      hjust = 0L,
+      label = "Arctic circle",
+      size  = 1.5,
+      x     = -179L,
+      y     = unique(unlist(x = geo, use.names = FALSE))[5] - 2L
+    ) +
+    geom_text(
+      data  = world,
+      color = "gray",
+      hjust = 0L,
+      label = "Tropic of Cancer",
+      size  = 1.5,
+      x     = -179L,
+      y     = unique(unlist(x = geo, use.names = FALSE))[4] - 2L
+    ) +
+    geom_text(
+      data  = world,
+      color = "gray",
+      hjust = 0L,
+      label = "Tropic of Capricorn",
+      size  = 1.5,
+      x     = -179L,
+      y     = unique(unlist(x = geo, use.names = FALSE))[3] - 2L
+    ) +
+    geom_text(
+      data  = world,
+      color = "gray",
+      hjust = 0L,
+      label = "Antarctic circle",
+      size  = 1.5,
+      x     = -179L,
+      y     = unique(unlist(x = geo, use.names = FALSE))[2] - 2L
+    ) +
+    # Add zonal labels
+    geom_text(
+      angle = 90L,
+      data  = world,
+      color = "gray",
+      hjust = .5,
+      label = unique(names(geo))[1],
+      size  = 2.5,
+      x     = -175L,
+      y     = mean(
+        c(
+          unique(unlist(x = geo, use.names = FALSE))[1],
+          unique(unlist(x = geo, use.names = FALSE))[2]
+        )
+      )
+    ) +
+    geom_text(
+      angle = 90L,
+      data  = world,
+      color = "gray",
+      hjust = .5,
+      label = unique(names(geo))[2],
+      size  = 2.5,
+      x     = -175L,
+      y     = mean(
+        c(
+          unique(unlist(x = geo, use.names = FALSE))[2],
+          unique(unlist(x = geo, use.names = FALSE))[3]
+        )
+      )
+    ) +
+    geom_text(
+      angle = 90L,
+      data  = world,
+      color = "gray",
+      hjust = .5,
+      label = unique(names(geo))[3],
+      size  = 2.5,
+      x     = -175L,
+      y     = mean(
+        c(
+          unique(unlist(x = geo, use.names = FALSE))[3],
+          unique(unlist(x = geo, use.names = FALSE))[4]
+        )
+      )
+    ) +
+    geom_text(
+      angle = 90L,
+      data  = world,
+      color = "gray",
+      hjust = .5,
+      label = unique(names(geo))[2],
+      size  = 2.5,
+      x     = -175L,
+      y     = mean(
+        c(
+          unique(unlist(x = geo, use.names = FALSE))[4],
+          unique(unlist(x = geo, use.names = FALSE))[5]
+        )
+      )
+    ) +
+    geom_text(
+      angle = 90L,
+      data  = world,
+      color = "gray",
+      hjust = .5,
+      label = unique(names(geo))[1],
+      size  = 2.5,
+      x     = -175L,
+      y     = mean(
+        c(
+          unique(unlist(x = geo, use.names = FALSE))[5],
+          unique(unlist(x = geo, use.names = FALSE))[6]
+        )
+      )
+    ) +
+    theme_light() +
+    theme(
+      axis.title      = element_blank(),
+      axis.text       = element_blank(),
+      axis.ticks      = element_blank(),
+      legend.key.size = unit(.2, "in"),
+      legend.title    = element_text(size = 5L),
+      legend.text     = element_text(size = 5L),
+      plot.margin     = margin(-.8, 0L, -.8, 0L, "in")
+    )
+
+  # Save the plot
+  ggsave(
+    filename = filename,
+    plot     = p,
+    device   = "png",
+    path     = "plots",
+    scale    = 1L,
+    height   = 9L / ar,
+    width    = 9L,
+    units    = "in",
+    dpi      = "retina"
+  )
+
+}
+
+# Plot the population airports onto a world map
+fn_plot_airport_map(
+  dt       = dt_pop,
+  dt_u     = dt_pop_u,
   filename = "2_map_of_population_airports.png",
-  plot     = last_plot(),
-  device   = "png",
-  path     = "plots",
-  scale    = 1L,
-  height   = 9L / ar,
-  width    = 9L,
-  units    = "in",
-  dpi      = "retina"
+  ppa_off  = -1.5
 )
 
 # Plot the sample airports onto a world map
-ggplot() +
-  geom_sf(data = world, fill = "gray") +
-  coord_sf(expand = FALSE) +
-  # Define the scales
-  scale_x_continuous(breaks = c(-180L, 180L)) +
-  scale_y_continuous(
-    breaks = unique(unlist(x = geo, use.names = FALSE)),
-    limits = c(-90L, 90L)
-  ) +
-  scale_color_viridis(
-    breaks    = breaks,
-    direction = -1L,
-    labels    = trans_format(trans = "log10", format = math_format(10^.x)),
-    limits    = c(
-      dt_pop$traffic[which.min(dt_pop$traffic)],
-      dt_pop$traffic[which.max(dt_pop$traffic)]
-    ),
-    name      = "PPA",
-    trans     = "log"
-  ) +
-  scale_size_continuous(name = "traffic", guide = "none") +
-  # Add the airports
-  geom_point(
-    data    = dt_smp_u,
-    mapping = aes(x = lon, y = lat, color = traffic, size = traffic),
-    shape   = 20L,
-  ) +
-  # Add parallels
-  geom_hline(
-    color      = "black",
-    linewidth  = .25,
-    yintercept = c(
-      dt_smp$lat[which.max(dt_smp$lat)],                 # Max latitude
-      dt_smp$lat[which.min(dt_smp$lat)],                 # Min latitude
-      mean(dt_smp_u$lat),      # Mean latitude
-      as.numeric(
-        crossprod(
-          dt_smp_u$traffic,
-          dt_smp_u$lat
-        ) /
-          sum(dt_smp_u$traffic)
-      ),                                                 # PPA-weighted latitude
-      median(dt_smp_u$lat)     # Median latitude
-    )
-  ) +
-  # Add parallel labels
-  geom_text(
-    data  = world,
-    color = "black",
-    hjust = 1L,
-    label = paste(
-      "Max. latitude ",
-      sprintf(
-        fmt = "%.2f",
-        round(x = dt_smp$lat[which.max(dt_smp$lat)], digits = 2L)
-      ),
-      "°",
-      sep = ""
-    ),
-    size  = 1.5,
-    x     = 179L,
-    y     = dt_smp$lat[which.max(dt_smp$lat)] + 2L
-  ) +
-  geom_text(
-    data  = world,
-    color = "black",
-    hjust = 1L,
-    label = paste(
-      "Min. latitude ",
-      sprintf(
-        fmt = "%.2f",
-        round(x = dt_smp$lat[which.min(dt_smp$lat)], digits = 2L)
-      ),
-      "°",
-      sep = ""
-    ),
-    size  = 1.5,
-    x     = 179L,
-    y     = dt_smp$lat[which.min(dt_smp$lat)] + 2L
-  ) +
-  geom_text(
-    data  = world,
-    color = "black",
-    hjust = 1L,
-    label = paste(
-      "Mean latitude ",
-      sprintf(
-        fmt = "%.2f",
-        round(x = mean(dt_smp_u$lat), digits = 2L)
-      ),
-      "°",
-      sep = ""
-    ),
-    size  = 1.5,
-    x     = 179L,
-    y     = mean(dt_smp_u$lat) - 1.5
-  ) +
-  geom_text(
-    data  = world,
-    color = "black",
-    hjust = 1L,
-    label = paste(
-      "PPA-weighted mean latitude ",
-      sprintf(
-        fmt = "%.2f",
-        round(
-          x      = as.numeric(crossprod(
-            dt_smp_u$traffic,
-            dt_smp_u$lat
-          ) /
-            sum(dt_smp_u$traffic)
-          ),
-          digits = 2L)
-      ),
-      "°",
-      sep = ""
-    ),
-    size  = 1.5,
-    x     = 179L,
-    y     = as.numeric(
-      crossprod(
-        dt_smp_u$traffic,
-        dt_smp_u$lat
-      ) /
-        sum(dt_smp_u$traffic)
-    ) - 1.35
-  ) +
-  geom_text(
-    data  = world,
-    color = "black",
-    hjust = 1L,
-    label = paste(
-      "Median latitude ",
-      sprintf(
-        fmt = "%.2f",
-        round(x = median(dt_smp_u$lat), digits = 2L)
-      ),
-      "°",
-      sep = ""
-    ),
-    size  = 1.5,
-    x     = 179L,
-    y     = median(dt_smp_u$lat) + 2L
-  ) +
-  geom_text(
-    data  = world,
-    color = "gray",
-    hjust = 0L,
-    label = "Arctic circle",
-    size  = 1.5,
-    x     = -179L,
-    y     = unique(unlist(x = geo, use.names = FALSE))[5] - 2L
-  ) +
-  geom_text(
-    data  = world,
-    color = "gray",
-    hjust = 0L,
-    label = "Tropic of Cancer",
-    size  = 1.5,
-    x     = -179L,
-    y     = unique(unlist(x = geo, use.names = FALSE))[4] - 2L
-  ) +
-  geom_text(
-    data  = world,
-    color = "gray",
-    hjust = 0L,
-    label = "Tropic of Capricorn",
-    size  = 1.5,
-    x     = -179L,
-    y     = unique(unlist(x = geo, use.names = FALSE))[3] - 2L
-  ) +
-  geom_text(
-    data  = world,
-    color = "gray",
-    hjust = 0L,
-    label = "Antarctic circle",
-    size  = 1.5,
-    x     = -179L,
-    y     = unique(unlist(x = geo, use.names = FALSE))[2] - 2L
-  ) +
-  # Add zonal labels
-  geom_text(
-    angle = 90L,
-    data  = world,
-    color = "gray",
-    hjust = .5,
-    label = unique(names(geo))[1],
-    size  = 2.5,
-    x     = -175L,
-    y     = mean(
-      c(
-        unique(unlist(x = geo, use.names = FALSE))[1],
-        unique(unlist(x = geo, use.names = FALSE))[2]
-      )
-    )
-  ) +
-  geom_text(
-    angle = 90L,
-    data  = world,
-    color = "gray",
-    hjust = .5,
-    label = unique(names(geo))[2],
-    size  = 2.5,
-    x     = -175L,
-    y     = mean(
-      c(
-        unique(unlist(x = geo, use.names = FALSE))[2],
-        unique(unlist(x = geo, use.names = FALSE))[3]
-      )
-    )
-  ) +
-  geom_text(
-    angle = 90L,
-    data  = world,
-    color = "gray",
-    hjust = .5,
-    label = unique(names(geo))[3],
-    size  = 2.5,
-    x     = -175L,
-    y     = mean(
-      c(
-        unique(unlist(x = geo, use.names = FALSE))[3],
-        unique(unlist(x = geo, use.names = FALSE))[4]
-      )
-    )
-  ) +
-  geom_text(
-    angle = 90L,
-    data  = world,
-    color = "gray",
-    hjust = .5,
-    label = unique(names(geo))[2],
-    size  = 2.5,
-    x     = -175L,
-    y     = mean(
-      c(
-        unique(unlist(x = geo, use.names = FALSE))[4],
-        unique(unlist(x = geo, use.names = FALSE))[5]
-      )
-    )
-  ) +
-  geom_text(
-    angle = 90L,
-    data  = world,
-    color = "gray",
-    hjust = .5,
-    label = unique(names(geo))[1],
-    size  = 2.5,
-    x     = -175L,
-    y     = mean(
-      c(
-        unique(unlist(x = geo, use.names = FALSE))[5],
-        unique(unlist(x = geo, use.names = FALSE))[6]
-      )
-    )
-  ) +
-  theme_light() +
-  theme(
-    axis.title      = element_blank(),
-    axis.text       = element_blank(),
-    axis.ticks      = element_blank(),
-    legend.key.size = unit(.2, "in"),
-    legend.title    = element_text(size = 5L),
-    legend.text     = element_text(size = 5L),
-    plot.margin     = margin(-.8, 0L, -.8, 0L, "in")
-  )
-
-# Save the plot
-ggsave(
+fn_plot_airport_map(
+  dt       = dt_smp,
+  dt_u     = dt_smp_u,
   filename = "2_map_of_sample_airports.png",
-  plot     = last_plot(),
-  device   = "png",
-  path     = "plots",
-  scale    = 1L,
-  height   = 9L / ar,
-  width    = 9L,
-  units    = "in",
-  dpi      = "retina"
+  ppa_off  = -1.35
 )
 
 # Build a histogram of airports by latitude
