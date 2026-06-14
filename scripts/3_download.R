@@ -33,11 +33,13 @@ cat("\014")
 # ==============================================================================
 
 # Query the ESGF server
-nc_files <- rbind(
-  # First query for the main climate variables of interest
+nc_files <-
+  # Single query: all five variables share the 6hrPt (instantaneous) table.
+  # huss (specific humidity) replaces hurs (relative humidity): huss is
+  # co-published with ps/tas/uas/vas at 6hrPt so no temporal realignment needed.
   esgf_query(
     activity   = "ScenarioMIP",
-    variable   = c("ps", "tas", "uas", "vas"),
+    variable   = c("ps", "tas", "uas", "vas", "huss"),
     frequency  = c("6hrPt"),
     experiment = c("ssp126", "ssp245", "ssp370", "ssp585"),
     source     = "MPI-ESM1-2-HR",
@@ -48,23 +50,7 @@ nc_files <- rbind(
     type       = "File",
     limit      = 10000L,
     data_node  = NULL
-  ),
-  # Separate query for 'hurs', which is only available at the 6hr frequency
-  esgf_query(
-    activity   = "ScenarioMIP",
-    variable   = c("hurs"),
-    frequency  = c("6hr"),
-    experiment = c("ssp126", "ssp245", "ssp370", "ssp585"),
-    source     = "MPI-ESM1-2-HR",
-    variant    = "r1i1p1f1",
-    replica    = FALSE,
-    latest     = TRUE,
-    resolution = "100 km",
-    type       = "File",
-    limit      = 10000L,
-    data_node  = NULL
   )
-)
 
 # ==============================================================================
 # 2 Parse the results
@@ -90,7 +76,7 @@ nrow(nc_files)
 nc_files %>%
   group_by(experiment_id) %>%
   summarize(
-    hurs = sum(variable_id == "hurs"),
+    huss = sum(variable_id == "huss"),
     ps   = sum(variable_id == "ps"),
     tas  = sum(variable_id == "tas"),
     uas  = sum(variable_id == "uas"),
