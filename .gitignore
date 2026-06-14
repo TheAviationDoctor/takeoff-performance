@@ -11,3 +11,6 @@ runways.csv
 *.sh
 logs/
 mysql/
+
+# renv: the project library is restored from renv.lock, never committed
+renv/library/
