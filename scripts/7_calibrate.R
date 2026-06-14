@@ -320,11 +320,18 @@ fn_calibrate <- function(clmax, i) {
 for (i in seq_len(nrow(dt_tko))) {
 
   # Run the optimizer to minimize the residual error
-  optimize(
+  res <- optimize(
     f        = function(clmax) fn_calibrate(clmax, i),
     interval = sim$opt_cls,
     tol      = sim$opt_tol
   )
+
+  # Re-run the calibration once at the optimal CLmax so that row i of dt_tko
+  # holds the optimum. fn_calibrate writes clmax/cllof/cd/vlof/todr_sim/diff to
+  # dt_tko as a side effect, so without this the stored values would be those of
+  # the optimizer's LAST probe point, not res$minimum (the actual optimum).
+  # [REV. 2026]
+  fn_calibrate(clmax = res$minimum, i = i)
 
   # Output results
   print(
