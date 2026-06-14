@@ -33,8 +33,8 @@ start_time <- Sys.time()
 # Clear the console
 cat("\014")
 
-# Set the number of CPU cores for parallel processing
-crs <- 10L
+# Set the number of CPU cores for parallel processing (leave one core free)
+crs <- parallel::detectCores() - 1L
 
 # Set a time horizon for the climatic data
 horizon <- as.POSIXct(

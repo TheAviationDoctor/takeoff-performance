@@ -31,8 +31,8 @@ start_time <- Sys.time()
 # Clear the console
 cat("\014")
 
-# Set the number of CPU cores for parallel processing
-crs <- 16L
+# Set the number of CPU cores for parallel processing (leave one core free)
+crs <- parallel::detectCores() - 1L
 
 # ==============================================================================
 # 1 Fetch the data that we need
