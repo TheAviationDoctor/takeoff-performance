@@ -197,7 +197,9 @@ fn_par_lapply <- function(crs, pkg, lst, fun) {
 
 # ==============================================================================
 # 6.2 Function to print a timestamped worker log line. Parameters:
-# ... = message tokens, joined to the standard prefix with single spaces
+# ... = message tokens (typically a context label such as the airport ICAO
+#       followed by the message), joined to the timestamp + PID prefix with
+#       single spaces
 # ==============================================================================
 
 fn_log <- function(...) {

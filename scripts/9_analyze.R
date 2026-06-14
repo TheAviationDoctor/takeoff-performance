@@ -15,7 +15,9 @@
 # Clear the environment
 rm(list = ls())
 
-# Load the required libraries
+# Load the required libraries. The arrow aggregations below call dplyr verbs
+# (group_by/summarise/collect) explicitly via dplyr:: rather than attaching
+# dplyr, to keep its generics from masking data.table (e.g. first/last/between).
 library(arrow)
 library(data.table)
 library(ggplot2)
@@ -31,6 +33,20 @@ start_time <- Sys.time()
 
 # Clear the console
 cat("\014")
+
+# ==============================================================================
+# Local helpers shared across the climate/takeoff/research sections below
+# ==============================================================================
+
+# LOESS smoother of a series over `year`; the span is centralised here so all
+# sections stay in sync. Used as lapply(.SD, \(x) fn_loess(x, year), ...) inside
+# a data.table group, where `year` is the grouped column.
+fn_loess <- function(y, year) {
+  predict(loess(formula = y ~ year, span = .75, model = TRUE))
+}
+
+# World basemap for the choropleth maps, built once and reused by every section
+world <- rnaturalearth::ne_countries(scale = "small", returnclass = "sf")
 
 # ==============================================================================
 # 1. Climate change summary
@@ -140,9 +156,7 @@ dt_cli_apt <- copy(dt_cli)
 dt_cli_apt[,
   (cols$all_loe) := lapply(
     X   = .SD,
-    FUN = function(x) {
-      predict(loess(formula = x ~ year, span = .75, model = TRUE))
-    }
+    FUN = function(x) fn_loess(x, year)
   ),
   by      = c("ssp", "icao"),
   .SDcols = cols$all
@@ -189,9 +203,6 @@ fwrite(
 # Transform the data
 dt_plt <- dt_cli_apt[year == dt_cli_apt[which.max(year), year]
   ][, !c(cols$all, cols$all_loe), with = FALSE]
-
-# Define the world object from the Natural Earth package
-world <- rnaturalearth::ne_countries(scale = "small", returnclass = "sf")
 
 # Create a function to plot results
 fn_plot <- function(col) {
@@ -457,9 +468,7 @@ dt_cli_zon <- rbind(
 dt_cli_zon[,
   (cols$all_loe) := lapply(
     X   = .SD,
-    FUN = function(x) {
-      predict(loess(formula = x ~ year, span = .75, model = TRUE))
-    }
+    FUN = function(x) fn_loess(x, year)
   ),
   by      = c("ssp", "zone"),
   .SDcols = cols$all
@@ -996,9 +1005,7 @@ dt_tko_apt[,
   # Add LOESS values
 ][, (cols$loe) := lapply(
     X   = .SD,
-    FUN = function(x) {
-      predict(loess(formula = x ~ year, span = .75, model = TRUE))
-    }
+    FUN = function(x) fn_loess(x, year)
   ),
   by      = c("ssp", "zone", "icao", "type"),
   .SDcols = cols$rel
@@ -1047,9 +1054,6 @@ fwrite(
 # ==============================================================================
 # 2.2.3 Plot the changes in LOESS values by airport onto a choropleth map
 # ==============================================================================
-
-# Define the world object from the Natural Earth package
-world <- rnaturalearth::ne_countries(scale = "small", returnclass = "sf")
 
 # Create a function to plot results
 fn_plot <- function(body, cols) {
@@ -1273,9 +1277,7 @@ dt_tko_zon[,
   .SDcols = cols$bas
 ][, (cols$loe) := lapply(
     X   = .SD,
-    FUN = function(x) {
-      predict(loess(formula = x ~ year, span = .75, model = TRUE))
-    }
+    FUN = function(x) fn_loess(x, year)
   ),
   by      = c("ssp", "zone", "type"),
   .SDcols = cols$rel
@@ -1640,12 +1642,9 @@ mapply(
 # 3.2.3 Plot the changes in base values by airport onto a choropleth map
 # ==============================================================================
 
-# Define the world object from the Natural Earth package
-world <- rnaturalearth::ne_countries(scale = "small", returnclass = "sf")
-
 # Create a function to plot results
 fn_plot <- function(body, cols, labs) {
-print(cols)
+
   ggplot() +
   geom_sf(data = world, fill = "gray") +
   coord_sf(expand = FALSE) +
@@ -1660,7 +1659,6 @@ print(cols)
     name      = labs,
     option    = "magma"
   ) +
-  # facet_wrap(~toupper(ssp)) +
   facet_wrap(facets = vars(toupper(ssp))) +
   geom_point(
     data = dt_res_apt[year == dt_res_apt[which.max(year), year] & type == body],
@@ -1859,9 +1857,7 @@ dt_res_zon <- rbind(
 # Create LOESS output variables from base values
 dt_res_zon[, (cols$loe) := lapply(
     X   = .SD,
-    FUN = function(x) {
-      predict(loess(formula = x ~ year, span = .75, model = TRUE))
-    }
+    FUN = function(x) fn_loess(x, year)
   ),
   by      = c("ssp", "zone", "type"),
   .SDcols = cols$bas
