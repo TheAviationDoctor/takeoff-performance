@@ -123,7 +123,6 @@ sim <- list(
   "isa_rho"     = 1.225,       # ISA sea-level air density in kg/m³
   "isa_tas"     = 288.15,      # ISA sea-level air temperature in K
   "k_to_c"      = 273.15,      # Number of °K in 0 °C
-  "ps_isa"      = 101325L,     # Air pressure in Pa at sea level under ISA
   "rsp_air"     = 287.058,     # Specific gas constant for dry air in J/(kg·K)
   "rsp_h2o"     = 461.495,     # Spec. gas constant for water vapor in J/(kg·K)
   # ISA tropospheric lapse rate in K/m (used by flat-rating and ps correction)

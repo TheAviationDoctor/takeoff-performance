@@ -69,7 +69,7 @@ fn_dis_gnd <- function(DT) {
 
   vsnd  <- rep(sqrt(sim$adb_idx * sim$rsp_air * DT[, tas]), each = sim$int_stp)
   vmach <- vtas / vsnd
-  dp    <- rep(DT[, ps] / sim$ps_isa, each = sim$int_stp)
+  dp    <- rep(DT[, ps] / sim$isa_ps, each = sim$int_stp)
   bpr   <- rep(DT[, bpr], each = sim$int_stp)
 
   g0 <-  .0606 * bpr  + .6337
