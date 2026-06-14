@@ -128,19 +128,29 @@ if (length(orog_file) == 1L) {
   # Release the NetCDF file from memory
   ncdf4::nc_close(nc = nc)
 
-  # Extract the nearest grid cell's orography for each sample airport and write
-  # it to that airport's orog column in the population table
-  for (x in as.vector(dt_smp$icao)) {
-    lat_idx <- which.min(abs(nc_lat - dt_smp[.(x), lat]))
-    lon_idx <- which.min(abs(nc_lon - dt_smp[.(x), lon]))
-    fn_sql_qry(
-      statement = paste0(
-        "UPDATE ", tolower(dat$pop),
-        " SET orog = ", nc_arr[lon_idx, lat_idx],
-        " WHERE icao = '", x, "';"
-      )
+  # Extract the nearest grid cell's orography for each sample airport
+  icaos <- as.vector(dt_smp$icao)
+  orogs <- vapply(
+    X   = icaos,
+    FUN = function(x) {
+      lat_idx <- which.min(abs(nc_lat - dt_smp[.(x), lat]))
+      lon_idx <- which.min(abs(nc_lon - dt_smp[.(x), lon]))
+      nc_arr[lon_idx, lat_idx]
+    },
+    FUN.VALUE = numeric(1L)
+  )
+
+  # Write every airport's orography to the population table in a single batched
+  # UPDATE (one CASE branch per airport), rather than one statement per airport
+  fn_sql_qry(
+    statement = paste0(
+      "UPDATE ", tolower(dat$pop), " SET orog = CASE icao ",
+      paste(sprintf("WHEN '%s' THEN %s", icaos, orogs), collapse = " "),
+      " END WHERE icao IN (",
+      paste(sprintf("'%s'", icaos), collapse = ", "),
+      ");"
     )
-  }
+  )
 
 } # End orography extraction
 
