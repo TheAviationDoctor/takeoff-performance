@@ -25,6 +25,7 @@
 rm(list = ls())
 
 # Load the required libraries
+library(arrow)
 library(data.table)
 library(DBI)
 library(ggplot2)
@@ -902,87 +903,48 @@ ggsave(
 # ==============================================================================
 
 # ==============================================================================
-# 2.1 Fetch and cleanse the takeoff simulation data. Variables:
-# itr_avg              = Average count of iterations per takeoff
-# itr_sum              = Count of all iterations performed
-# tko_ok_thr_min       = Count of takeoffs performed using 75% TOGA
-# tko_ok_thr_mid       = Count of takeoffs performed using ]75%-100%[ TOGA
-# tko_ok_thr_max_no_rm = Count of takeoffs performed using 100% TOGA and no
-#                         payload removal
-# tko_ok_thr_max_rm    = Count of takeoffs performed using 100% TOGA and
-#                         payload removal not exceeding the BELF
-# tko_ok_thr_max       = Count of all takeoffs performed using 100% TOGA
-#                         (with or without payload removal)
-# tko_ok               = Count of all successful takeoffs
-#                         (regardless of thrust and payload removal)
-# tko_ok               = Count of all unsuccessful takeoffs
-#                         (despite 100% TOGA and payload removal down to BELF)
-# tko                  = Count of all takeoffs (whether successful or not)
+# 2.1 Read and summarise the takeoff simulation data [REV. 2026]
+# Source: the per-airport Parquet dataset written by 8_simulate.R (dir$tko_pq),
+# read and aggregated with arrow instead of the former MySQL `tko` round-trip.
+# Each row carries an `outcome` of feasible / infeasible_field / infeasible_thrust
+# (see 6_model.R §3.3.1 and 8_simulate.R), so feasibility is read straight from
+# `outcome` rather than re-derived from todr <= toda. The iteration count (itr)
+# no longer exists: the vectorised bisection solver replaced the per-passenger
+# loop. Counts per (year, ssp, zone, icao, lat, lon, type):
+# tko_ok_thr_min       = feasible takeoffs at maximum derate (thr_red = thr_ini)
+# tko_ok_thr_mid       = feasible takeoffs at partial derate (0 < thr_red < ini)
+# tko_ok_thr_max_no_rm = feasible at full thrust (thr_red = 0), no payload removal
+# tko_ok_thr_max_rm    = feasible at full thrust (thr_red = 0), with payload removal
+# tko_ok_thr_max       = all feasible takeoffs at full thrust (thr_red = 0)
+# tko_ok               = all feasible takeoffs (any derate or payload removal)
+# tko_ko               = all infeasible takeoffs (field-length- or thrust-limited)
+# tko                  = count of all takeoffs (feasible or not)
 # ==============================================================================
 
-# Create the summary table (runtime: ~90 minutes)
-fn_sql_qry(
-  statement = paste(
-    "CREATE TABLE IF NOT EXISTS",
-    tolower(dat$an_tko),
-    "(
-      year                 YEAR,
-      ssp                  CHAR(6),
-      zone                 CHAR(11),
-      icao                 CHAR(4),
-      lat                  FLOAT,
-      lon                  FLOAT,
-      type                 CHAR(4),
-      itr                  INT,
-      tko_ok_thr_min       MEDIUMINT,
-      tko_ok_thr_mid       MEDIUMINT,
-      tko_ok_thr_max_no_rm MEDIUMINT,
-      tko_ok_thr_max_rm    MEDIUMINT,
-      tko_ok_thr_max       MEDIUMINT,
-      tko_ok               MEDIUMINT,
-      tko_ko               MEDIUMINT,
-      tko                  MEDIUMINT
-    )
-    AS SELECT
-      year,
-      ssp,
-      zone,
-      icao,
-      lat,
-      lon,
-      type,
-      SUM(itr)                                          AS itr,
-      SUM(thr_red =", sim$thr_ini, ")                   AS tko_ok_thr_min,
-      SUM(thr_red BETWEEN 1 AND", sim$thr_ini - 1L, ")  AS tko_ok_thr_mid,
-      SUM(thr_red = 0 AND todr <= toda AND tom_rem = 0) AS tko_ok_thr_max_no_rm,
-      SUM(thr_red = 0 AND todr <= toda AND tom_rem > 0) AS tko_ok_thr_max_rm,
-      SUM(thr_red = 0 AND todr <= toda)                 AS tko_ok_thr_max,
-      SUM(todr <= toda)                                 AS tko_ok,
-      SUM(todr > toda)                                  AS tko_ko,
-      COUNT(*)                                          AS tko
-    FROM",
-    tolower(dat$tko),
-    "GROUP BY
-      year,
-      ssp,
-      icao,
-      type
-    ;",
-    sep = " "
-  )
-)
+# Aggregate the outcomes over each airport's observations (arrow pushes the
+# group-by down to its C++ engine, so only the small summary is collected)
+dt_tko <- arrow::open_dataset(dir$tko_pq) |>
+  dplyr::group_by(year, ssp, zone, icao, lat, lon, type) |>
+  dplyr::summarise(
+    tko_ok_thr_min       = sum(outcome == "feasible" & thr_red == sim$thr_ini),
+    tko_ok_thr_mid       = sum(outcome == "feasible" &
+                                 thr_red >= 1L & thr_red <= sim$thr_ini - 1L),
+    tko_ok_thr_max_no_rm = sum(outcome == "feasible" &
+                                 thr_red == 0L & tom_rem == 0L),
+    tko_ok_thr_max_rm    = sum(outcome == "feasible" &
+                                 thr_red == 0L & tom_rem > 0L),
+    tko_ok_thr_max       = sum(outcome == "feasible" & thr_red == 0L),
+    tko_ok               = sum(outcome == "feasible"),
+    tko_ko               = sum(outcome != "feasible"),
+    tko                  = dplyr::n(),
+    .groups              = "drop"
+  ) |>
+  dplyr::collect() |>
+  setDT()
 
-# Fetch the data
-dt_tko <- fn_sql_qry(
-  statement = paste(
-    "SELECT
-      *
-    FROM",
-    tolower(dat$an_tko),
-    ";",
-    sep = " "
-  )
-)
+# Coerce arrow's 64-bit integer counts to base numeric for downstream maths
+cnt <- grep("^tko", names(dt_tko), value = TRUE)
+dt_tko[, (cnt) := lapply(.SD, as.numeric), .SDcols = cnt]
 
 # Recast column types
 set(x = dt_tko, j = "year", value = as.integer(dt_tko[, year]))
@@ -1017,6 +979,78 @@ cols$loe <- paste(cols$rel, "loe", sep = "_")        # LOESS values
 cols$dif <- paste(cols$loe, "dif", sep = "_")        # Changes in LOESS values
 
 # ==============================================================================
+# 2.1.1 Infeasibility analysis by zone, SSP, and year [REV. 2026]
+# The share of takeoffs that cannot be flown — split into field-length-limited
+# (finite TODR exceeding TODA or todr_cap) and thrust-limited (cannot reach
+# Vlof) — is itself a publishable result, so summarise and plot it on its own.
+# ==============================================================================
+
+# Aggregate the three outcome categories by zone, SSP, and year
+dt_inf <- arrow::open_dataset(dir$tko_pq) |>
+  dplyr::group_by(year, ssp, zone) |>
+  dplyr::summarise(
+    feasible          = sum(outcome == "feasible"),
+    infeasible_field  = sum(outcome == "infeasible_field"),
+    infeasible_thrust = sum(outcome == "infeasible_thrust"),
+    tko               = dplyr::n(),
+    .groups           = "drop"
+  ) |>
+  dplyr::collect() |>
+  setDT()
+
+# Coerce arrow's 64-bit integer counts to base numeric
+cnt <- c("feasible", "infeasible_field", "infeasible_thrust", "tko")
+dt_inf[, (cnt) := lapply(.SD, as.numeric), .SDcols = cnt]
+
+# Recast column types
+set(x = dt_inf, j = "year", value = as.integer(dt_inf[, year]))
+set(x = dt_inf, j = "zone", value = as.factor(dt_inf[, zone]))
+set(x = dt_inf, j = "ssp",  value = as.factor(dt_inf[, ssp]))
+
+# Recode frigid airports to temperate, then re-aggregate the merged zone
+dt_inf[zone == "Frigid", zone := "Temperate"]
+dt_inf <- dt_inf[,
+  lapply(X = .SD, FUN = sum),
+  by      = c("year", "ssp", "zone"),
+  .SDcols = cnt
+]
+
+# Compute the infeasible shares as fractions of all takeoffs
+dt_inf[, `:=`(
+  share_field  = infeasible_field  / tko,
+  share_thrust = infeasible_thrust / tko,
+  share_infeas = (infeasible_field + infeasible_thrust) / tko
+)]
+
+# Save the infeasibility summary to disk
+fwrite(
+  x    = dt_inf,
+  file = paste(dir$res, "dt_tko_infeasible_share_by_zone.csv", sep = "/")
+)
+
+# Plot the infeasible share over time, by climate zone and SSP
+(ggplot(
+  data    = dt_inf,
+  mapping = aes(x = year, y = share_infeas, color = ssp)
+) +
+  geom_line(linewidth = .5) +
+  scale_x_continuous("Year") +
+  scale_y_continuous("Share of infeasible takeoffs", labels = scales::percent) +
+  scale_color_viridis(discrete = TRUE, name = "SSP") +
+  facet_wrap(~zone, ncol = 1L, scales = "free_y") +
+  theme_light()) %>%
+  ggsave(
+    filename = "9_infeasible_share_by_zone.png",
+    device   = "png",
+    path     = "plots",
+    scale    = 1L,
+    width    = 6L,
+    height   = NA,
+    units    = "in",
+    dpi      = "retina"
+  )
+
+# ==============================================================================
 # 2.2 Summarize takeoff outcomes by airport
 # ==============================================================================
 
@@ -1048,7 +1082,7 @@ dt_tko_apt[,
   .SDcols = cols$rel
 ][,
   # Remove unneeded columns
-  c("itr", cols$bas, cols$rel) := NULL
+  c(cols$bas, cols$rel) := NULL
 ]
 
 # Save the base values to disk
@@ -1488,59 +1522,21 @@ fwrite(
 # avg_tom_rem = Mean takeoff mass reduction in kg
 # ==============================================================================
 
-# Create the summary table (runtime: ~65 minutes)
-fn_sql_qry(
-  statement = paste(
-    "CREATE TABLE IF NOT EXISTS",
-    tolower(dat$an_res),
-    "(
-      year        YEAR,
-      ssp         CHAR(6),
-      zone        CHAR(11),
-      icao        CHAR(4),
-      lat         FLOAT,
-      lon         FLOAT,
-      type        CHAR(4),
-      avg_todr    FLOAT,
-      avg_thr_red FLOAT,
-      avg_tom_rem FLOAT
-    )
-    AS SELECT
-      year,
-      ssp,
-      zone,
-      icao,
-      lat,
-      lon,
-      type,
-      AVG(todr)    AS avg_todr,
-      AVG(thr_red) AS avg_thr_red,
-      AVG(tom_rem) AS avg_tom_rem
-    FROM",
-    tolower(dat$tko),
-    "WHERE
-      todr <= toda
-    GROUP BY
-      year,
-      ssp,
-      icao,
-      type
-    ;",
-    sep = " "
-  )
-)
-
-# Fetch the data
-dt_res <- fn_sql_qry(
-  statement = paste(
-    "SELECT
-      *
-    FROM",
-    tolower(dat$an_res),
-    ";",
-    sep = " "
-  )
-)
+# Read and average the feasible takeoffs per airport [REV. 2026]
+# Source: dir$tko_pq via arrow (was the MySQL `res` summary). Only feasible
+# takeoffs contribute, matching the former WHERE todr <= toda; their todr is
+# finite, while infeasible rows (excluded here) carry todr = NA.
+dt_res <- arrow::open_dataset(dir$tko_pq) |>
+  dplyr::filter(outcome == "feasible") |>
+  dplyr::group_by(year, ssp, zone, icao, lat, lon, type) |>
+  dplyr::summarise(
+    avg_todr    = mean(todr),
+    avg_thr_red = mean(thr_red),
+    avg_tom_rem = mean(tom_rem),
+    .groups     = "drop"
+  ) |>
+  dplyr::collect() |>
+  setDT()
 
 # Recast column types
 set(x = dt_res, j = "year", value = as.integer(dt_res[, year]))
