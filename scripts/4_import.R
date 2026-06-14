@@ -131,8 +131,8 @@ if (length(orog_file) == 1L) {
   # Extract the nearest grid cell's orography for each sample airport and write
   # it to that airport's orog column in the population table
   for (x in as.vector(dt_smp$icao)) {
-    lat_idx <- which.min(abs(nc_lat - dt_smp[icao == x, lat]))
-    lon_idx <- which.min(abs(nc_lon - dt_smp[icao == x, lon]))
+    lat_idx <- which.min(abs(nc_lat - dt_smp[.(x), lat]))
+    lon_idx <- which.min(abs(nc_lon - dt_smp[.(x), lon]))
     fn_sql_qry(
       statement = paste0(
         "UPDATE ", tolower(dat$pop),
@@ -229,8 +229,8 @@ fn_import <- function(nc_file) {
       X   = as.vector(dt_smp$icao),
       FUN = function(x) {
         which.min(
-          abs(grid$lat - dt_smp[icao == x, lat]) +
-            abs(grid$lon - dt_smp[icao == x, lon])
+          abs(grid$lat - dt_smp[.(x), lat]) +
+            abs(grid$lon - dt_smp[.(x), lon])
         )
       }
     )
@@ -318,10 +318,10 @@ fn_import <- function(nc_file) {
     FUN = function(x) {
 
       # Find the row index of the latitude nearest to the airport's
-      lat_idx <- which.min(abs(nc_lat - dt_smp[icao == x, lat]))
+      lat_idx <- which.min(abs(nc_lat - dt_smp[.(x), lat]))
 
       # Find the row index of the longitude nearest to the airport's
-      lon_idx <- which.min(abs(nc_lon - dt_smp[icao == x, lon]))
+      lon_idx <- which.min(abs(nc_lon - dt_smp[.(x), lon]))
 
       # Extract the climate variable's time series at those spatial indices
       nc_val <- nc_arr[lon_idx, lat_idx, ]
@@ -333,10 +333,10 @@ fn_import <- function(nc_file) {
           tz     = "GMT",
           format = "%Y-%m-%d %H:%M:%S"
         ),
-        icao = as.factor(dt_smp[icao == x, icao]), # Airport's ICAO code
-        lat  = dt_smp[icao == x, lat],             # Airport's latitude
-        lon  = dt_smp[icao == x, lon],             # Airport's longitude
-        zone = as.factor(dt_smp[icao == x, zone]), # Airport's climate zone
+        icao = as.factor(dt_smp[.(x), icao]), # Airport's ICAO code
+        lat  = dt_smp[.(x), lat],             # Airport's latitude
+        lon  = dt_smp[.(x), lon],             # Airport's longitude
+        zone = as.factor(dt_smp[.(x), zone]), # Airport's climate zone
         ssp  = as.factor(nc_ssp),                  # Experiment (SSP)
         var  = as.factor(nc_var),                  # Climatic variable name
         val  = as.vector(nc_val)                   # Climatic variable value
