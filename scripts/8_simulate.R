@@ -1,8 +1,8 @@
 # ==============================================================================
 #    NAME: scripts/8_simulate.R  (refactored)
-#   INPUT: Climatic observations as a partitioned Parquet dataset (dir$cli_pq),
-#          one file per airport, produced by a Parquet-writing 5_transform.R
-#          (or a one-off export of the MySQL `cli` table — see the guide).
+#   INPUT: Climatic observations as a Parquet dataset (dir$cli_pq), one file per
+#          airport, produced by 5_transform.R; calibration from cal.parquet
+#          (7_calibrate.R).
 # ACTIONS: For each airport, solve the operating point of each takeoff by
 #          VECTORISED BISECTION instead of a one-passenger-at-a-time loop:
 #            - if the aircraft fits at MTOM on TOGA  -> find the MAX thrust
@@ -12,7 +12,7 @@
 #          Outcomes are labelled feasible / field-length-limited / thrust-
 #          limited (see 6_model.R §3.3.1).
 #  OUTPUT: One Parquet file of takeoff outcomes per airport in dir$tko_pq.
-# RUNTIME: ~1–2 orders of magnitude faster than the MySQL/loop version.
+# RUNTIME: ~1–2 orders of magnitude faster than the former MySQL/loop version.
 #  AUTHOR: Thomas D. Pellegrin <thomas@pellegr.in>
 #     REV: 2026 — Parquet + arrow I/O; vectorised monotone solver.
 # ==============================================================================
@@ -28,7 +28,7 @@ library(data.table)   # In-memory vectorised compute
 library(dplyr)        # open_dataset() verbs for the per-airport filter
 
 source("scripts/0_common.R")  # adds sim$flat_*, sim$isa_lap, sim$acc_eps,
-source("scripts/6_model.R")   # sim$todr_cap, dir$cli_pq, dir$tko_pq (see guide)
+source("scripts/6_model.R")   # sim$todr_cap, dir$cli_pq, dir$tko_pq
 
 start_time <- Sys.time()
 
@@ -45,16 +45,9 @@ dt_act <- fread(
   colClasses = c(rep("factor", 2L), rep("integer", 5L), rep("numeric", 5L))
 )[type %in% act, .(type, n, slst, bpr, s, tom_mtom = tom_max)]
 
-# 1.2 Calibration (CLlof, CD by integer kg). Read from Parquet if exported,
-#     else fall back to the database. Key by (type, tom) for fast joins.
-dt_cal <- if (file.exists(file.path(dir$cal, "cal.parquet"))) {
-  setDT(read_parquet(file.path(dir$cal, "cal.parquet")))
-} else {
-  fn_sql_qry(paste0(
-    "SELECT type, tom, todr_cal, cllof, cd FROM ", tolower(dat$cal),
-    " WHERE type IN (", paste0("'", act, "'", collapse = ", "), ");"
-  ))
-}
+# 1.2 Calibration (CLlof, CD by integer kg) from cal.parquet (7_calibrate.R).
+#     Key by (type, tom) for fast joins.
+dt_cal <- setDT(read_parquet(file.path(dir$cal, "cal.parquet")))
 dt_cal[, type := as.factor(type)]
 setkey(dt_cal, type, tom)
 dt_cal[, tom_belf := min(tom), by = type]   # economic floor = break-even mass
@@ -101,6 +94,9 @@ fn_solve_max <- function(DT, var, lo, hi, toda, n_iter,
 
 cli_ds <- open_dataset(dir$cli_pq)           # the whole climate dataset (lazy)
 airports <- collect(distinct(cli_ds, icao))[["icao"]]
+
+# Ensure the output directory exists before writing into it
+dir.create(dir$tko_pq, showWarnings = FALSE, recursive = TRUE)
 
 # Resume support: skip airports already written
 done <- sub("\\.parquet$", "", list.files(dir$tko_pq, pattern = "\\.parquet$"))

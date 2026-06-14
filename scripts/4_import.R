@@ -2,7 +2,7 @@
 #    NAME: scripts/4_import.R
 #   INPUT: NetCDF files downloaded from the Earth System Grid Federation (ESGF)
 # ACTIONS: Extract time series of climate variables for each airport coordinates
-#  OUTPUT: 2,213,829,660 rows of climate data written to the database
+#  OUTPUT: ~2.2e9 rows of long climate data as Parquet files in dir$imp_pq
 # RUNTIME: ~7.2 hours (3.8 GHz CPU / 128 GB DDR4 RAM / SSD)
 #  AUTHOR: Thomas D. Pellegrin <thomas@pellegr.in>
 #    YEAR: 2023
@@ -16,8 +16,8 @@
 rm(list = ls())
 
 # Load the required libraries
+library(arrow)
 library(data.table)
-library(DBI)
 library(ncdf4)
 library(ncdf4.helpers)
 library(parallel)
@@ -44,47 +44,15 @@ horizon <- as.POSIXct(
 )
 
 # ==============================================================================
-# 1 Set up the database table
+# 1 Fetch the data that we need
 # ==============================================================================
 
-# Drop the table if it exists
-fn_sql_qry(
-  statement = paste("DROP TABLE IF EXISTS ", tolower(dat$imp), ";", sep = "")
-)
-
-# Create the table
-fn_sql_qry(
-  statement = paste(
-    "CREATE TABLE", tolower(dat$imp),
-    "(
-    id   INT UNSIGNED NOT NULL AUTO_INCREMENT,
-    obs  DATETIME NOT NULL,
-    icao CHAR(4) NOT NULL,
-    lat  FLOAT NOT NULL,
-    lon  FLOAT NOT NULL,
-    zone CHAR(11) NOT NULL,
-    ssp  CHAR(6) NOT NULL,
-    var  CHAR(4) NOT NULL,
-    val  FLOAT NOT NULL,
-    PRIMARY KEY (id)
-    );",
-    sep = " "
-  )
-)
-
-# ==============================================================================
-# 2 Fetch the data that we need
-# ==============================================================================
-
-# Fetch the list of unique airports in the sample
-dt_smp <- fn_sql_qry(
-  statement = paste(
-    "SELECT icao, lat, lon, zone",
-    "FROM", dat$pop,
-    "WHERE traffic >", sim$pop_thr,
-    "GROUP BY icao;",
-    sep = " "
-  )
+# Fetch the list of unique airports in the sample from the population Parquet
+dt_smp <- unique(
+  setDT(arrow::read_parquet(fls$pop))[
+    traffic > sim$pop_thr, .(icao, lat, lon, zone)
+  ],
+  by = "icao"
 )
 
 # Recast column types
@@ -103,11 +71,11 @@ orog_file <- nc_files[ grepl(pattern = "^orog_", x = basename(nc_files))]
 nc_files  <- nc_files[!grepl(pattern = "^orog_", x = basename(nc_files))]
 
 # ==============================================================================
-# 3 Extract the climate model orography at each airport [REV. 2026]
+# 2 Extract the climate model orography at each airport [REV. 2026]
 # The fixed orography field (orog) gives the model's surface elevation (z_model)
 # in each grid cell. 5_transform.R needs it to reduce the model surface pressure
 # to each airport's true field elevation. We extract one nearest-cell value per
-# sample airport and store it in the population table's orog column.
+# sample airport and write it into the population Parquet's orog column.
 # ==============================================================================
 
 if (length(orog_file) == 1L) {
@@ -140,28 +108,23 @@ if (length(orog_file) == 1L) {
     FUN.VALUE = numeric(1L)
   )
 
-  # Write every airport's orography to the population table in a single batched
-  # UPDATE (one CASE branch per airport), rather than one statement per airport
-  fn_sql_qry(
-    statement = paste0(
-      "UPDATE ", tolower(dat$pop), " SET orog = CASE icao ",
-      paste(sprintf("WHEN '%s' THEN %s", icaos, orogs), collapse = " "),
-      " END WHERE icao IN (",
-      paste(sprintf("'%s'", icaos), collapse = ", "),
-      ");"
-    )
-  )
+  # Join the per-airport orography onto the full population table and rewrite the
+  # population Parquet (non-sample airports keep their NA orog)
+  dt_pop  <- setDT(arrow::read_parquet(fls$pop))
+  dt_orog <- data.table(icao = icaos, orog = orogs)
+  dt_pop[dt_orog, orog := i.orog, on = "icao"]
+  arrow::write_parquet(x = dt_pop, sink = fls$pop)
 
 } # End orography extraction
 
 # ==============================================================================
-# 4 Parse the NetCDF files
+# 3 Parse the NetCDF files
 # ==============================================================================
 
 fn_import <- function(nc_file) {
 
   # ============================================================================
-  # 4.1 Parse the current NetCDF file
+  # 3.1 Parse the current NetCDF file
   # ============================================================================
 
   # Offset the start of each worker by a random duration to spread disk I/O load
@@ -209,7 +172,7 @@ fn_import <- function(nc_file) {
   ncdf4::nc_close(nc = nc)
 
   # ============================================================================
-  # 4.2 Plot the climate model's spatial grid cell
+  # 3.2 Plot the climate model's spatial grid cell
   # ============================================================================
 
   # Check if the plot already exists
@@ -302,7 +265,7 @@ fn_import <- function(nc_file) {
   } # End plot creation
 
   # ============================================================================
-  # 4.3 Extract the climatic variables for each sample airport (inner loop)
+  # 3.3 Extract the climatic variables for each sample airport (inner loop)
   # ============================================================================
 
   dt_nc <- lapply(
@@ -346,39 +309,36 @@ fn_import <- function(nc_file) {
   ) # End lapply
 
   # ============================================================================
-  # 4.4 Consolidate the outputs and write them to the database
+  # 3.4 Consolidate the outputs and write them to a Parquet file
   # ============================================================================
 
   # Consolidate the data tables
   dt_nc <- rbindlist(l = dt_nc, use.names = FALSE)
 
-  # Connect the worker to the database
-  conn <- dbConnect(RMySQL::MySQL(), default.file = dat$cnf, group = dat$grp)
-
-  # Write to the database
-  dbWriteTable(
-    conn      = conn,
-    name      = tolower(dat$imp),
-    value     = dt_nc,
-    append    = TRUE,
-    row.names = FALSE
+  # Write one Parquet file per NetCDF file (unique name => no worker contention;
+  # rows stay grouped by icao so 5_transform's per-airport filter can prune)
+  arrow::write_parquet(
+    x    = dt_nc,
+    sink = file.path(
+      dir$imp_pq, paste0(sub("\\.nc$", "", basename(nc_file)), ".parquet")
+    )
   )
-
-  # Disconnect the worker from the database
-  dbDisconnect(conn)
 
 } # End of the fn_import function
 
 # ==============================================================================
-# 5 Handle the parallel computation
+# 4 Handle the parallel computation
 # ==============================================================================
+
+# Ensure the output directory exists before the workers write into it
+dir.create(dir$imp_pq, showWarnings = FALSE, recursive = TRUE)
 
 # Distribute the NetCDF files across the CPU cores
 fn_par_lapply(
   crs = crs,
   pkg = c(
+    "arrow",
     "data.table",
-    "DBI",
     "ggplot2",
     "ncdf4",
     "ncdf4.helpers",
@@ -392,20 +352,7 @@ fn_par_lapply(
 )
 
 # ==============================================================================
-# 6 Index the database table
-# ==============================================================================
-
-fn_sql_qry(
-  statement = paste(
-    "CREATE INDEX idx ON",
-    tolower(dat$imp),
-    "(icao);",
-    sep = " "
-  )
-)
-
-# ==============================================================================
-# 7 Housekeeping
+# 5 Housekeeping
 # ==============================================================================
 
 # Stop the script timer

@@ -2,7 +2,7 @@
 #    NAME: scripts/1_population.R
 #   INPUT: CSV files of passenger traffic, runways, and airport coordinates
 # ACTIONS: Assemble the airport population and plot its characteristics
-#  OUTPUT: Two plots saved to disk and 8,982 rows written to the dat$pop table
+#  OUTPUT: Two plots saved to disk and 8,982 rows written to population.parquet
 # RUNTIME: ~3 seconds (3.8 GHz CPU / 128 GB DDR4 RAM / SSD)
 #  AUTHOR: Thomas D. Pellegrin <thomas@pellegr.in>
 #    YEAR: 2023
@@ -16,8 +16,8 @@
 rm(list = ls())
 
 # Load the required libraries
+library(arrow)
 library(e1071)
-library(DBI)
 library(scales)
 library(tidyverse)
 
@@ -465,67 +465,18 @@ ggsave(
 )
 
 # ==============================================================================
-# 7 Save the population to a database
+# 7 Save the population to a Parquet file
 # ==============================================================================
 
-# Drop the table if it exists
-fn_sql_qry(
-  statement = paste("DROP TABLE IF EXISTS ", tolower(dat$pop), ";", sep = "")
-)
+# Add an empty orography column for 4_import.R to fill per sample airport (the
+# field-elevation surface-pressure correction in 5_transform.R reads it)
+df_pop$orog <- NA_real_
 
-# Create the population table
-fn_sql_qry(
-  statement = paste(
-    "CREATE TABLE ",
-    tolower(dat$pop),
-    "(
-    id      SMALLINT NOT NULL AUTO_INCREMENT,
-    icao    CHAR(4) NOT NULL,
-    iata    CHAR(3) NOT NULL,
-    traffic INT NOT NULL,
-    name    CHAR(", max(nchar(df_pop$name)), ") NOT NULL,
-    lat     FLOAT NOT NULL,
-    lon     FLOAT NOT NULL,
-    elev    FLOAT NOT NULL,
-    orog    FLOAT NULL DEFAULT NULL,
-    zone    CHAR(11) NOT NULL,
-    rwy     CHAR(5) NOT NULL,
-    toda    SMALLINT NOT NULL,
-    PRIMARY KEY (id)
-    );",
-    sep = ""
-  )
-)
-
-# Connect the worker to the database
-conn <- dbConnect(RMySQL::MySQL(), default.file = dat$cnf, group = dat$grp)
-
-# Write the population data to the database
-dbWriteTable(
-  conn      = conn,
-  name      = tolower(dat$pop),
-  value     = df_pop,
-  append    = TRUE,
-  row.names = FALSE
-)
-
-# Disconnect the worker from the database
-dbDisconnect(conn)
+# Write the population to a single Parquet file (read by 2/4/5_*.R)
+arrow::write_parquet(x = df_pop, sink = fls$pop)
 
 # ==============================================================================
-# 8 Index the database table
-# ==============================================================================
-
-# Create a composite index
-fn_sql_qry(
-  statement = paste(
-    "CREATE INDEX idx ON", tolower(dat$pop), "(icao, zone, traffic, lat, lon);",
-    sep = " "
-  )
-)
-
-# ==============================================================================
-# 9 Housekeeping
+# 8 Housekeeping
 # ==============================================================================
 
 # Stop the script timer

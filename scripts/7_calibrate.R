@@ -2,7 +2,7 @@
 #    NAME: scripts/7_calibrate.R
 #   INPUT: OEM takeoff performance data under ISA conditions in dir$cal
 # ACTIONS: Optimize lift and drag coefficients in 6_model.R to fit the OEM data
-#  OUTPUT: 28,627 rows of takeoff calibration data written to the dat$cal table
+#  OUTPUT: 28,627 rows of takeoff calibration data written to cal.parquet
 # RUNTIME: ~50 minutes (3.8 GHz CPU / 128 GB DDR4 RAM / SSD)
 #  AUTHOR: Thomas D. Pellegrin <thomas@pellegr.in>
 #    YEAR: 2023
@@ -16,8 +16,8 @@
 rm(list = ls())
 
 # Load the required libraries
+library(arrow)
 library(data.table)
-library(DBI)
 library(ggplot2)
 library(magrittr)
 library(parallel)
@@ -360,71 +360,18 @@ for (i in seq_len(nrow(dt_tko))) {
 } # End of the for loop
 
 # ==============================================================================
-# 10 Save the results to the database
+# 10 Save the calibration results to a Parquet file
 # ==============================================================================
 
-# ==============================================================================
-# 10.1 Set up the database table to store the calibration data
-# ==============================================================================
-
-fn_sql_qry(
-  statement = paste("DROP TABLE IF EXISTS ", tolower(dat$cal), ";", sep = "")
-)
-
-fn_sql_qry(
-  statement = paste(
-    "CREATE TABLE",
-    tolower(dat$cal),
-    "(
-      id       INT UNSIGNED NOT NULL AUTO_INCREMENT,
-      type     CHAR(4) NOT NULL,
-      tom      MEDIUMINT NOT NULL,
-      todr_cal SMALLINT NOT NULL,
-      todr_sim SMALLINT NOT NULL,
-      vlof     FLOAT NOT NULL,
-      clmax    FLOAT NOT NULL,
-      cllof    FLOAT NOT NULL,
-      cd       FLOAT NOT NULL,
-    PRIMARY KEY (id));",
-    sep = " "
-  )
-)
-
-# ==============================================================================
-# 10.2 Write the calibration results to the database
-# ==============================================================================
-
-# Select which columns to write to the database and in which order
+# Select which columns to write and in which order
 cols <- c(
   "type", "tom", "todr_cal", "todr_sim", "vlof", "clmax", "cllof", "cd"
 )
 
-# Connect to the database
-conn <- dbConnect(RMySQL::MySQL(), default.file = dat$cnf, group = dat$grp)
-
-# Write the data
-dbWriteTable(
-  conn      = conn,
-  name      = tolower(dat$cal),
-  value     = dt_tko[, ..cols],
-  append    = TRUE,
-  row.names = FALSE
-)
-
-# Disconnect from the database
-dbDisconnect(conn)
-
-# ==============================================================================
-# 10.3 Index the database table
-# ==============================================================================
-
-# Create the index
-fn_sql_qry(
-  statement = paste(
-    "CREATE INDEX", tolower(dat$idx),
-    "ON", tolower(dat$cal), "(type, tom);",
-    sep = " "
-  )
+# Write the calibration table (single Parquet file read by 8_simulate.R)
+arrow::write_parquet(
+  x    = dt_tko[, ..cols],
+  sink = file.path(dir$cal, "cal.parquet")
 )
 
 # ==============================================================================

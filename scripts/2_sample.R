@@ -1,6 +1,6 @@
 # ==============================================================================
 #    NAME: scripts/2_sample.R
-#   INPUT: 8,982 rows read from the dat$pop table
+#   INPUT: 8,982 rows read from population.parquet
 # ACTIONS: Subset the airport sample and plot its characteristics
 #  OUTPUT: Five plots saved to disk
 # RUNTIME: ~18 seconds (3.8 GHz CPU / 128 GB DDR4 RAM / SSD)
@@ -16,8 +16,8 @@
 rm(list = ls())
 
 # Load the required libraries
+library(arrow)
 library(data.table)
-library(DBI)
 library(geosphere)
 library(kgc)
 library(maps)
@@ -42,24 +42,9 @@ cat("\014")
 # ==============================================================================
 
 # Fetch the population data
-dt_pop <- fn_sql_qry(
-  statement = paste(
-    "SELECT
-      icao,
-      iata,
-      traffic,
-      name,
-      lat,
-      lon,
-      zone,
-      rwy,
-      toda
-    FROM",
-      dat$pop,
-    ";",
-    sep = " "
-  )
-)
+dt_pop <- setDT(arrow::read_parquet(fls$pop))[, .(
+  icao, iata, traffic, name, lat, lon, zone, rwy, toda
+)]
 
 # Recast column types
 set(x = dt_pop, j = "zone", value = as.factor(dt_pop[, zone]))

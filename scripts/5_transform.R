@@ -1,9 +1,10 @@
 # ==============================================================================
 #    NAME: scripts/5_transform.R
-#   INPUT: 2,213,829,660 long climate observations read from the dat$imp table
+#   INPUT: ~2.2e9 long climate observations read from the dir$imp_pq Parquet set
 # ACTIONS: Pivot the data
 #          Calculate the air density, wind vector, and active runway
-#  OUTPUT: 442,765,932 wide climate observations written to the dat$cli table
+#  OUTPUT: ~4.4e8 wide climate observations as one Parquet file per airport in
+#          dir$cli_pq (consumed by 8_simulate.R and 9_analyze.R)
 # RUNTIME: ~4.25 hours (3.8 GHz CPU / 128 GB DDR4 RAM / SSD)
 #  AUTHOR: Thomas D. Pellegrin <thomas@pellegr.in>
 #    YEAR: 2023
@@ -17,8 +18,8 @@
 rm(list = ls())
 
 # Load the required libraries
+library(arrow)
 library(data.table)
-library(DBI)
 library(parallel)
 library(stringr)
 
@@ -38,26 +39,11 @@ crs <- parallel::detectCores() - 1L
 # 1 Fetch the data that we need
 # ==============================================================================
 
-# Fetch the list of airports and runways in the sample
-dt_smp <- fn_sql_qry(
-  statement = paste(
-    "SELECT
-      icao,
-      lat,
-      lon,
-      zone,
-      elev,
-      orog,
-      rwy,
-      toda
-    FROM ",
-    tolower(dat$pop),
-    "WHERE traffic >",
-    sim$pop_thr,
-    ";",
-    sep = " "
-  )
-)
+# Fetch the list of airports and runways in the sample from the population
+# Parquet (orog was filled in by 4_import.R)
+dt_smp <- setDT(arrow::read_parquet(fls$pop))[
+  traffic > sim$pop_thr, .(icao, lat, lon, zone, elev, orog, rwy, toda)
+]
 
 # Recast column types
 set(x = dt_smp, j = "icao", value = as.factor(dt_smp[, icao]))
@@ -75,46 +61,21 @@ dt_smp <- dt_smp[dt_smp[, .I[which.max(toda)], by = .(icao, hdg)]$V1]
 nrow(dt_smp)
 
 # ==============================================================================
-# 2 Set up the database table to store the results in wide format
+# 2 Open the imported climate dataset (lazy; per-airport filter pushed down)
 # ==============================================================================
 
-# Drop the table if it exists
-fn_sql_qry(
-  statement = paste("DROP TABLE IF EXISTS ", tolower(dat$cli), ";", sep = "")
-)
-
-# Create the table
-fn_sql_qry(
-  statement = paste(
-    "CREATE TABLE",
-    tolower(dat$cli),
-    "(
-      id            INT UNSIGNED NOT NULL AUTO_INCREMENT,
-      year          YEAR NOT NULL,
-      obs           DATETIME NOT NULL,
-      icao          CHAR(4) NOT NULL,
-      lat           FLOAT NOT NULL,
-      lon           FLOAT NOT NULL,
-      zone          CHAR(11) NOT NULL,
-      ssp           CHAR(6) NOT NULL,
-      huss          FLOAT NOT NULL,
-      ps            FLOAT NOT NULL,
-      tas           FLOAT NOT NULL,
-      rho           FLOAT NOT NULL,
-      hdw           FLOAT NOT NULL,
-      rwy           CHAR(5) NOT NULL,
-      toda          SMALLINT NOT NULL,
-      PRIMARY KEY (id)
-    );",
-    sep = " "
-  )
-)
+# Ensure the output directory exists before the workers write into it
+dir.create(dir$cli_pq, showWarnings = FALSE, recursive = TRUE)
 
 # ==============================================================================
 # 3 Transform the climate data for each airport
 # ==============================================================================
 
 fn_transform <- function(apt) {
+
+  # The airport key arrives as a factor element; arrow's predicate and the file
+  # name both need a plain character scalar
+  apt <- as.character(apt)
 
   # Offset the start of each worker by a random duration to spread disk I/O load
   Sys.sleep(time = sample(x = 1L:(crs * 10L), size = 1L))
@@ -126,24 +87,13 @@ fn_transform <- function(apt) {
   # 3.1 Fetch and prepare the climate data for the current airport
   # ============================================================================
 
-  # Fetch the climate data for the current airport
-  dt_nc <- fn_sql_qry(
-    statement = paste(
-      "SELECT
-        obs,
-        icao,
-        ssp,
-        var,
-        val
-      FROM ",
-      tolower(dat$imp),
-      " WHERE
-        icao = '",
-        apt,
-      "';",
-      sep = ""
-    )
-  )
+  # Fetch the climate data for the current airport from the Parquet dataset
+  # (arrow pushes the icao filter down and prunes row groups by icao)
+  dt_nc <- arrow::open_dataset(dir$imp_pq) |>
+    dplyr::filter(icao == apt) |>
+    dplyr::select(obs, icao, ssp, var, val) |>
+    dplyr::collect() |>
+    setDT()
 
   # Recast column types
   set(x = dt_nc, j = "icao", value = as.factor(dt_nc[, icao]))
@@ -258,12 +208,12 @@ fn_transform <- function(apt) {
   dt_nc <- dt_nc[dt_nc[, .I[which.max(hdw)], by = .(obs, ssp)]$V1]
 
   # ============================================================================
-  # 3.6 Write the data in wide format to the database
+  # 3.6 Write the data in wide format to a per-airport Parquet file
   # ============================================================================
 
   # Inform the log file
   fn_log(apt, "(5/6) Writing", format(x = nrow(dt_nc), big.mark = ","),
-    "observations to the database...")
+    "observations to Parquet...")
 
   # Create the year column
   set(
@@ -272,31 +222,24 @@ fn_transform <- function(apt) {
     value = format.Date(x = dt_nc[, obs], format = "%Y")
   )
 
-  # Select which columns to write to the database and in which order
+  # Select which columns to write and in which order
   cols <- c(
     "year", "obs", "icao", "lat", "lon", "zone", "ssp",
     "huss", "ps", "tas", "rho",
     "hdw", "rwy", "toda"
   )
 
-  # Connect the worker to the database
-  conn <- dbConnect(RMySQL::MySQL(), default.file = dat$cnf, group = dat$grp)
-
-  # Write the data
-  dbWriteTable(
-    conn      = conn,
-    name      = tolower(dat$cli),
-    value     = dt_nc[, ..cols],
-    append    = TRUE,
-    row.names = FALSE
+  # Write one Parquet file for this airport (one airport per worker => no
+  # contention); this is the dir$cli_pq dataset that 8_simulate.R reads
+  arrow::write_parquet(
+    x    = dt_nc[, ..cols],
+    sink = file.path(dir$cli_pq, paste0(apt, ".parquet")),
+    compression = "zstd"
   )
-
-  # Disconnect the worker from the database
-  dbDisconnect(conn)
 
   # Inform the log file
   fn_log(apt, "(6/6) Written", format(x = nrow(dt_nc), big.mark = ","),
-    "observations to the database.")
+    "observations to Parquet.")
 
 } # End of the fn_transform function
 
@@ -307,26 +250,13 @@ fn_transform <- function(apt) {
 # Distribute the sample airports across the CPU cores
 fn_par_lapply(
   crs = crs,
-  pkg = c("data.table", "DBI", "stringr"),
+  pkg = c("arrow", "data.table", "dplyr", "stringr"),
   lst = unique(dt_smp[, icao], by = "icao"),
   fun = fn_transform
 )
 
 # ==============================================================================
-# 5 Index the database table
-# ==============================================================================
-
-# Create the index
-fn_sql_qry(
-  statement = paste(
-    "CREATE INDEX idx ON",
-    tolower(dat$cli),
-    "(year, icao, zone, ssp);", sep = " "
-  )
-)
-
-# ==============================================================================
-# 6 Housekeeping
+# 5 Housekeeping
 # ==============================================================================
 
 # Stop the script timer

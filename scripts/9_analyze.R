@@ -1,20 +1,11 @@
 # ==============================================================================
 #    NAME: scripts/9_analyze.R
-#   INPUT: Climate and takeoff data output by earlier scripts
-# ACTIONS: Create summary tables in MySQL and associated plots
+#   INPUT: Climate and takeoff Parquet datasets output by earlier scripts
+# ACTIONS: Summarise the climate and takeoff data with arrow and plot the results
 #  OUTPUT: Plot and summary data files saved to disk
-# RUNTIME: ~160 minutes if the summary tables do not yet exist in the database.
-#          ~3.5 minutes otherwise. (3.8 GHz CPU / 128 GB DDR4 RAM / SSD)
+# RUNTIME: Dominated by the arrow aggregations over dir$cli_pq and dir$tko_pq.
 #  AUTHOR: Thomas D. Pellegrin <thomas@pellegr.in>
 #    YEAR: 2023
-# ==============================================================================
-
-# ==============================================================================
-# NOTE: Some of the SQL queries below are memory-intensive. If you encounter
-# the MySQL error "The total number of locks exceeds the lock table size",
-# log as admin into MySQL Workbench and increase the InnoDB buffer size to
-# a value of X where X is how much RAM in GB you can allocate to the process:
-# 'SET GLOBAL innodb_buffer_pool_size = X * 1024 * 1024 * 1024;'
 # ==============================================================================
 
 # ==============================================================================
@@ -27,7 +18,6 @@ rm(list = ls())
 # Load the required libraries
 library(arrow)
 library(data.table)
-library(DBI)
 library(ggplot2)
 library(rnaturalearth)
 library(scales)
@@ -47,7 +37,7 @@ cat("\014")
 # ==============================================================================
 
 # ==============================================================================
-# 1.1 Fetch and cleanse the climate model data. Variables:
+# 1.1 Read and summarise the climate model data from dir$cli_pq. Variables:
 # tas  = Near-surface air temperature in °C
 # huss = Near-surface specific humidity in g/kg [REV. 2026, was hurs]
 # ps   = Near-surface air pressure in Pa
@@ -56,77 +46,20 @@ cat("\014")
 # ==============================================================================
 
 # Create the summary table (runtime: ~15 minutes)
-fn_sql_qry(
-  statement = paste(
-    "CREATE TABLE IF NOT EXISTS",
-    tolower(dat$an_cli),
-    "(
-      year     YEAR,
-      ssp      CHAR(6),
-      zone     CHAR(11),
-      icao     CHAR(4),
-      lat      FLOAT,
-      lon      FLOAT,
-      max_tas  FLOAT,
-      max_huss FLOAT,
-      max_ps   FLOAT,
-      max_rho  FLOAT,
-      max_hdw  FLOAT,
-      avg_tas  FLOAT,
-      avg_huss FLOAT,
-      avg_ps   FLOAT,
-      avg_rho  FLOAT,
-      avg_hdw  FLOAT,
-      min_tas  FLOAT,
-      min_huss FLOAT,
-      min_ps   FLOAT,
-      min_rho  FLOAT,
-      min_hdw  FLOAT
-    )
-    AS SELECT
-      year,
-      ssp,
-      zone,
-      icao,
-      lat,
-      lon,
-      MAX(tas)  AS max_tas,
-      MAX(huss) AS max_huss,
-      MAX(ps)   AS max_ps,
-      MAX(rho)  AS max_rho,
-      MAX(hdw)  AS max_hdw,
-      AVG(tas)  AS avg_tas,
-      AVG(huss) AS avg_huss,
-      AVG(ps)   AS avg_ps,
-      AVG(rho)  AS avg_rho,
-      AVG(hdw)  AS avg_hdw,
-      MIN(tas)  AS min_tas,
-      MIN(huss) AS min_huss,
-      MIN(ps)   AS min_ps,
-      MIN(rho)  AS min_rho,
-      MIN(hdw)  AS min_hdw
-    FROM",
-    tolower(dat$cli),
-    "GROUP BY
-      year,
-      ssp,
-      icao
-    ;",
-    sep = " "
-  )
-)
-
-# Fetch the data
-dt_cli <- fn_sql_qry(
-  statement = paste(
-    "SELECT
-      *
-    FROM",
-    tolower(dat$an_cli),
-    ";",
-    sep = " "
-  )
-)
+# Aggregate the per-observation climate to max/avg/min per airport-year-SSP
+# (arrow pushes the group-by down to its C++ engine; only the summary collects)
+dt_cli <- arrow::open_dataset(dir$cli_pq) |>
+  dplyr::group_by(year, ssp, zone, icao, lat, lon) |>
+  dplyr::summarise(
+    max_tas  = max(tas),  avg_tas  = mean(tas),  min_tas  = min(tas),
+    max_huss = max(huss), avg_huss = mean(huss), min_huss = min(huss),
+    max_ps   = max(ps),   avg_ps   = mean(ps),   min_ps   = min(ps),
+    max_rho  = max(rho),  avg_rho  = mean(rho),  min_rho  = min(rho),
+    max_hdw  = max(hdw),  avg_hdw  = mean(hdw),  min_hdw  = min(hdw),
+    .groups  = "drop"
+  ) |>
+  dplyr::collect() |>
+  setDT()
 
 # Recast column types
 set(x = dt_cli, j = "year", value = as.integer(dt_cli[, year]))
