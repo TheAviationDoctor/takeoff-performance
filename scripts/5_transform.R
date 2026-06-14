@@ -19,7 +19,6 @@ rm(list = ls())
 # Load the required libraries
 library(data.table)
 library(DBI)
-library(masscor)
 library(parallel)
 library(stringr)
 
@@ -96,13 +95,10 @@ fn_sql_qry(
       lon           FLOAT NOT NULL,
       zone          CHAR(11) NOT NULL,
       ssp           CHAR(6) NOT NULL,
-      hurs          FLOAT NOT NULL,
-      hurs_cap      FLOAT NOT NULL,
+      huss          FLOAT NOT NULL,
       ps            FLOAT NOT NULL,
       tas           FLOAT NOT NULL,
-      rho1          FLOAT NOT NULL,
-      rho2          FLOAT NOT NULL,
-      rho3          FLOAT NOT NULL,
+      rho           FLOAT NOT NULL,
       hdw           FLOAT NOT NULL,
       rwy           CHAR(5) NOT NULL,
       toda          SMALLINT NOT NULL,
@@ -215,83 +211,28 @@ fn_transform <- function(apt) {
     )
   )
 
-  # Polynomial approximation for the saturation vapor pressure at 0°C in mbar
-  # Based on the ESW(T) function at https://icoads.noaa.gov/software/other/profs
-  pol <- 0.99999683 +
-    (dt_nc[, tas] - sim$k_to_c) * (-0.90826951E-02 +
-      (dt_nc[, tas] - sim$k_to_c) * (0.78736169E-04 +
-        (dt_nc[, tas] - sim$k_to_c) * (-0.61117958E-06 +
-          (dt_nc[, tas] - sim$k_to_c) * (0.43884187E-08 +
-            (dt_nc[, tas] - sim$k_to_c) * (-0.29883885E-10 +
-              (dt_nc[, tas] - sim$k_to_c) * (0.21874425E-12 +
-                (dt_nc[, tas] - sim$k_to_c) * (-0.17892321E-14 +
-                  (dt_nc[, tas] - sim$k_to_c) * (0.11112018E-16 +
-                    (dt_nc[, tas] - sim$k_to_c) * (-0.30994571E-19)))))))))
-
   # ============================================================================
-  # 3.2.1 Method 1: ideal gas law allowing for supersaturation (hurs > 100%)
+  # 3.2 Air density from specific humidity (huss) [REV. 2026]
+  # huss is co-sampled with ps/tas/uas/vas in the 6hrPt table, so no temporal
+  # realignment is needed and the water-vapour partial pressure follows directly
+  # from huss and ps — no relative humidity, no saturation-pressure polynomial,
+  # and no supersaturation to cap. Adapted from the partial-pressure form of
+  # Dalton's law with eps = Mw / Md = sim$mwr.
   # ============================================================================
 
-  # Calculate the partial pressure of water vapor in mbar
-  pv <- (sim$sat_ref / pol^8L) * (dt_nc[, hurs] / 100L)
+  # Water-vapour partial pressure in Pa:  e = p * q / (eps + (1 - eps) * q)
+  pv <- dt_nc[, ps] * dt_nc[, huss] /
+    (sim$mwr + (1 - sim$mwr) * dt_nc[, huss])
 
-  # Calculate the partial pressure of dry air in mbar
-  pd <- dt_nc[, ps] / 100L - pv
+  # Dry-air partial pressure in Pa
+  pd <- dt_nc[, ps] - pv
 
-  # Calculate the air density in kg/m3
+  # Moist-air density in kg/m3 (ideal gas, partial pressures)
   set(
     x     = dt_nc,
-    j     = "rho1",
-    value = (
-      (pd / (sim$rsp_air * dt_nc[, tas])) + (pv / (sim$rsp_h2o * dt_nc[, tas]))
-    ) * 100L
-  )
-
-  # ============================================================================
-  # 3.2.2 Method 2: ideal gas law, no supersaturation (hurs capped at 100%)
-  # These additional methods are provided because occurrences of supersaturation
-  # (hurs > 100%) were observed in MPI-ESM1-2-HR model outputs.
-  # See https://doi.org/jmgx and https://doi.org/jmgw for further details.
-  # ============================================================================
-
-  # Cap hurs at 100% where supersaturation is observed
-  set(
-    x     = dt_nc,
-    j     = "hurs_cap",
-    value = fifelse(dt_nc[, hurs] > 100L, 100L, dt_nc[, hurs])
-  )
-
-  # Re-calculate the partial pressure of water vapor in mbar
-  pv <- (sim$sat_ref / pol^8L) * (dt_nc[, hurs_cap] / 100L)
-  
-  # Re-calculate the partial pressure of dry air in mbar
-  pd <- dt_nc[, ps] / 100L - pv
-
-  # Calculate the air density in kg/m3
-  set(
-    x     = dt_nc,
-    j     = "rho2",
-    value = (
-      (pd / (sim$rsp_air * dt_nc[, tas])) + (pv / (sim$rsp_h2o * dt_nc[, tas]))
-    ) * 100L
-  )
-
-  # ============================================================================
-  # 3.2.3 Method 2: CIPM-2007 method, no supersaturation (hurs capped at 100%)
-  # ============================================================================
-
-  # Alternate air density calculation based on https://doi.org/dqnsdj
-  set(
-    x     = dt_nc,
-    j     = "rho3",
-    value = masscor::airDensity(
-      Temp     = dt_nc[, tas],
-      p        = dt_nc[, ps],
-      h        = dt_nc[, hurs_cap],
-      unitsENV = c("K", "Pa", "%"),
-      x_CO2    = sim$co2_ppm,
-      model    = "CIMP2007" # Typo in the package (should be "CIPM2007")
-    ) * 10^3
+    j     = "rho",
+    value = pd / (sim$rsp_air * dt_nc[, tas]) +
+            pv / (sim$rsp_h2o * dt_nc[, tas])
   )
 
   # ============================================================================
@@ -381,23 +322,9 @@ fn_transform <- function(apt) {
 
   # Select which columns to write to the database and in which order
   cols <- c(
-    "year",
-    "obs",
-    "icao",
-    "lat",
-    "lon",
-    "zone",
-    "ssp",
-    "hurs",
-    "hurs_cap",
-    "ps",
-    "tas",
-    "rho1",
-    "rho2",
-    "rho3",
-    "hdw",
-    "rwy",
-    "toda"
+    "year", "obs", "icao", "lat", "lon", "zone", "ssp",
+    "huss", "ps", "tas", "rho",
+    "hdw", "rwy", "toda"
   )
 
   # Connect the worker to the database
@@ -443,7 +370,7 @@ fn_transform <- function(apt) {
 # Distribute the sample airports across the CPU cores
 fn_par_lapply(
   crs = crs,
-  pkg = c("data.table", "DBI", "masscor", "stringr"),
+  pkg = c("data.table", "DBI", "stringr"),
   lst = unique(dt_smp[, icao], by = "icao"),
   fun = fn_transform
 )
