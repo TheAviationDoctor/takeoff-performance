@@ -195,7 +195,6 @@ set(
 # 5 Set the takeoff conditions used for calibration
 # ==============================================================================
 
-set(x = dt_cal, j = "hurs",    value = sim$isa_hur) # Relative humidity in %
 set(x = dt_cal, j = "ps",      value = sim$isa_ps)  # Air pressure in Pa
 set(x = dt_cal, j = "tas",     value = sim$isa_tas) # Air temperature in K
 set(x = dt_cal, j = "rho",     value = sim$isa_rho) # Air density in kg/m³

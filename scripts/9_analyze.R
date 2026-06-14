@@ -29,7 +29,6 @@ library(arrow)
 library(data.table)
 library(DBI)
 library(ggplot2)
-library(masscor)
 library(rnaturalearth)
 library(scales)
 library(viridis)
@@ -50,9 +49,9 @@ cat("\014")
 # ==============================================================================
 # 1.1 Fetch and cleanse the climate model data. Variables:
 # tas  = Near-surface air temperature in °C
-# hurs = Near-surface relative humidity in % (de-supersaturated)
+# huss = Near-surface specific humidity in g/kg [REV. 2026, was hurs]
 # ps   = Near-surface air pressure in Pa
-# rho  = Near-surface air density in kg/m³
+# rho  = Near-surface air density in kg/m³ [REV. 2026, single huss-based rho]
 # hdw  = Near-surface headwind in m/s
 # ==============================================================================
 
@@ -69,17 +68,17 @@ fn_sql_qry(
       lat      FLOAT,
       lon      FLOAT,
       max_tas  FLOAT,
-      max_hurs FLOAT,
+      max_huss FLOAT,
       max_ps   FLOAT,
       max_rho  FLOAT,
       max_hdw  FLOAT,
       avg_tas  FLOAT,
-      avg_hurs FLOAT,
+      avg_huss FLOAT,
       avg_ps   FLOAT,
       avg_rho  FLOAT,
       avg_hdw  FLOAT,
       min_tas  FLOAT,
-      min_hurs FLOAT,
+      min_huss FLOAT,
       min_ps   FLOAT,
       min_rho  FLOAT,
       min_hdw  FLOAT
@@ -91,21 +90,21 @@ fn_sql_qry(
       icao,
       lat,
       lon,
-      MAX(tas)      AS max_tas,
-      MAX(hurs_cap) AS max_hurs,
-      MAX(ps)       AS max_ps,
-      MAX(rho2)     AS max_rho,
-      MAX(hdw)      AS max_hdw,
-      AVG(tas)      AS avg_tas,
-      AVG(hurs_cap) AS avg_hurs,
-      AVG(ps)       AS avg_ps,
-      AVG(rho2)     AS avg_rho,
-      AVG(hdw)      AS avg_hdw,
-      MIN(tas)      AS min_tas,
-      MIN(hurs_cap) AS min_hurs,
-      MIN(ps)       AS min_ps,
-      MIN(rho2)     AS min_rho,
-      MIN(hdw)      AS min_hdw
+      MAX(tas)  AS max_tas,
+      MAX(huss) AS max_huss,
+      MAX(ps)   AS max_ps,
+      MAX(rho)  AS max_rho,
+      MAX(hdw)  AS max_hdw,
+      AVG(tas)  AS avg_tas,
+      AVG(huss) AS avg_huss,
+      AVG(ps)   AS avg_ps,
+      AVG(rho)  AS avg_rho,
+      AVG(hdw)  AS avg_hdw,
+      MIN(tas)  AS min_tas,
+      MIN(huss) AS min_huss,
+      MIN(ps)   AS min_ps,
+      MIN(rho)  AS min_rho,
+      MIN(hdw)  AS min_hdw
     FROM",
     tolower(dat$cli),
     "GROUP BY
@@ -138,6 +137,10 @@ set(x = dt_cli, j = "icao", value = as.factor(dt_cli[, icao]))
 # Convert temperatures from °K to °C
 cols <- c("max_tas", "avg_tas", "min_tas")
 dt_cli[, (cols) := lapply(X = .SD, FUN = "-", sim$k_to_c), .SDcols = cols]
+
+# Convert near-surface specific humidity from kg/kg to g/kg
+cols <- c("max_huss", "avg_huss", "min_huss")
+dt_cli[, (cols) := lapply(X = .SD, FUN = "*", 10^3), .SDcols = cols]
 
 # Convert near-surface air pressure from Pa to hPa
 cols <- c("max_ps", "avg_ps", "min_ps")
@@ -783,65 +786,48 @@ fwrite(
 )
 
 # ==============================================================================
-# 1.4 Sensitivity analysis of rho to tas, ps, and hurs
+# 1.4 Sensitivity analysis of rho to tas, ps, and huss [REV. 2026]
+# Density is now computed with the pipeline's own moist-air formulation from
+# specific humidity (huss), identical to 5_transform.R §3.3, instead of the
+# former masscor/relative-humidity call.
 # ==============================================================================
 
 # Set the number of data points to plot
 res <- 11L
 
-# Build a data table for the sensitivity analysis
+# Moist-air density (kg/m3) from huss, ps (Pa) and tas (K). Matches 5_transform.
+fn_rho <- function(tas, ps, huss) {
+  pv <- ps * huss / (sim$mwr + (1 - sim$mwr) * huss)
+  pd <- ps - pv
+  pd / (sim$rsp_air * tas) + pv / (sim$rsp_h2o * tas)
+}
+
+# Representative sea-level specific humidity span for the humidity sensitivity:
+# ISA air is dry, so vary huss from 0 up to ~saturation at ISA sea level (kg/kg)
+huss_max <- 0.01
+
+# Build a data table for the sensitivity analysis (SI units: K, Pa, kg/kg)
 dt_cli_sa <- data.table(
-  # Set sea-level ISA values for air temperature, pressure, and rel. humidity
-  isa_tas  = rep(x = sim$isa_tas, times = res) - sim$k_to_c,
-  isa_ps   = rep(x = sim$isa_ps,  times = res) / 100L,
-  isa_hurs = rep(x = sim$isa_hur, times = res),
-  # Set the percentage of change in the independent variables
+  isa_tas  = rep(x = sim$isa_tas, times = res),
+  isa_ps   = rep(x = sim$isa_ps,  times = res),
+  isa_huss = rep(x = 0,           times = res),
+  # Fractional change applied to the independent variables
   scale    = seq(from = 0L, to = .1, length.out = res)
 )
 
-# Flex the independent variables
+# Flex one independent variable at a time
 dt_cli_sa[,
-          var_tas  := isa_tas  * (1L + scale)   # Increase tas by 10%
+          var_tas  := isa_tas  * (1L + scale)            # Increase tas by 10%
 ][,
-  var_ps   := isa_ps   * (1L - scale)   # Decrease ps by 10%
+  var_ps   := isa_ps   * (1L - scale)            # Decrease ps by 10%
 ][,
-  var_hurs := isa_hurs + (100L * scale) # Increase hurs by 10 p. p.
+  var_huss := isa_huss + huss_max / max(scale) * scale   # 0 -> huss_max
 ]
 
-dt_cli_sa
-
-# Calculate sensitivity of air density to air temperature
-dt_cli_sa[,
-          rho_tas := masscor::airDensity(
-            Temp     = var_tas,  # We increase tas
-            p        = isa_ps,   # We keep ps constant
-            h        = isa_hurs, # We keep hurs constant
-            x_CO2    = sim$co2_ppm,
-            model    = "CIMP2007"
-          ) * 10^6
-]
-
-# Calculate sensitivity of air density to air pressure
-dt_cli_sa[,
-          rho_ps := masscor::airDensity(
-            Temp     = isa_tas,  # We keep tas constant
-            p        = var_ps,   # We decrease ps
-            h        = isa_hurs, # We keep hurs constant
-            x_CO2    = sim$co2_ppm,
-            model    = "CIMP2007"
-          ) * 10^6
-]
-
-# Calculate sensitivity of air density to relative humidity
-dt_cli_sa[,
-          rho_hurs := masscor::airDensity(
-            Temp     = isa_tas,  # We keep tas constant
-            p        = isa_ps,   # We keep ps constant
-            h        = var_hurs, # We increase hurs
-            x_CO2    = sim$co2_ppm,
-            model    = "CIMP2007"
-          ) * 10^6
-]
+# Calculate the sensitivity of air density to each independent variable
+dt_cli_sa[, rho_tas  := fn_rho(var_tas, isa_ps,  isa_huss)]
+dt_cli_sa[, rho_ps   := fn_rho(isa_tas, var_ps,  isa_huss)]
+dt_cli_sa[, rho_huss := fn_rho(isa_tas, isa_ps,  var_huss)]
 
 # Calculate relative changes in the air density
 dt_cli_sa[,
@@ -849,7 +835,7 @@ dt_cli_sa[,
 ][,
   rho_ps_rel   := abs(rho_ps   / rho_ps[1:1] - 1L)
 ][,
-  rho_hurs_rel := abs(rho_hurs / rho_hurs[1:1] - 1L)
+  rho_huss_rel := abs(rho_huss / rho_huss[1:1] - 1L)
 ]
 
 # Save the data to disk
@@ -866,14 +852,14 @@ ggplot(
   # Add lines
   geom_line(mapping = aes(y = rho_tas_rel),  linewidth = 1L) +
   geom_line(mapping = aes(y = rho_ps_rel),   linewidth = 1L) +
-  geom_line(mapping = aes(y = rho_hurs_rel), linewidth = 1L) +
+  geom_line(mapping = aes(y = rho_huss_rel), linewidth = 1L) +
   # Add labels
   geom_label(mapping = aes(x = .1, y = max(rho_tas_rel),  label = "tas")) +
   geom_label(mapping = aes(x = .1, y = max(rho_ps_rel),   label = "ps")) +
-  geom_label(mapping = aes(x = .1, y = max(rho_hurs_rel), label = "hurs")) +
+  geom_label(mapping = aes(x = .1, y = max(rho_huss_rel), label = "huss")) +
   # Define scales
   scale_x_continuous(
-    name   = "Absolute percentage of change in tas, ps, or hurs",
+    name   = "Absolute percentage of change in tas, ps, or huss",
     labels = scales::label_percent()
   ) +
   scale_y_continuous(

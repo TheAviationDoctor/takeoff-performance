@@ -75,11 +75,11 @@ bod <- list(
 
 # Climatic variables and plot units
 cli <- list(
-  "tas"  = "in °C",   # Near-surface air temperature 
-  "ps"   = "in hPa",  # Near-surface air pressure 
-  "hurs" = "in p.p.", # Near-surface relative humidity 
-  "rho"  = "in g/m³", # Near-surface air density 
-  "hdw"  = "in m/s"   # Near-surface headwind 
+  "tas"  = "in °C",   # Near-surface air temperature
+  "ps"   = "in hPa",  # Near-surface air pressure
+  "huss" = "in g/kg", # Near-surface specific humidity
+  "rho"  = "in g/m³", # Near-surface air density
+  "hdw"  = "in m/s"   # Near-surface headwind
 )
 
 # Latitudinal boundaries of the Earth's climate zones
@@ -116,17 +116,14 @@ sim <- list(
   "thr_ini"     = 25L,         # Thrust reduction for simulation in %
   # Natural constants
   "adb_idx"     = 1.4,         # Adiabatic index for dry air at ISA temperature
-  "co2_ppm"     = 441.10e-06,  # Molar fraction of carbon dioxide in the air
   "ft_to_m"     = .3048,       # Number of m in one ft
   "g"           = 9.806665,    # Gravitational acceleration constant in m/s²
   "isa_hdw"     = 0L,          # ISA near-surface headwind in m/s
-  "isa_hur"     = 0L,          # ISA sea-level relative humidity in %
   "isa_ps"      = 101325L,     # ISA sea-level air pressure in Pa
   "isa_rho"     = 1.225,       # ISA sea-level air density in kg/m³
   "isa_tas"     = 288.15,      # ISA sea-level air temperature in K
   "k_to_c"      = 273.15,      # Number of °K in 0 °C
   "ps_isa"      = 101325L,     # Air pressure in Pa at sea level under ISA
-  "sat_ref"     = 6.1078,      # Ref. saturation vapor pressure at 0°C in mbar
   "rsp_air"     = 287.058,     # Specific gas constant for dry air in J/(kg·K)
   "rsp_h2o"     = 461.495,     # Spec. gas constant for water vapor in J/(kg·K)
   # ISA tropospheric lapse rate in K/m (used by flat-rating and ps correction)
