@@ -294,30 +294,6 @@ fn_import <- function(nc_file) {
         val  = as.vector(nc_val)                   # Climatic variable value
       )
 
-      # All climate variables except 'hurs' are 6-hourly mean samples at 06:00
-      # (i.e. a mean of 03:00-09:00), 12:00 (i.e. a mean of 09:00-15:00), 18:00
-      # (i.e. a mean of 15:00-21:00), and 00:00 (i.e. a mean of 21:00-03:00).
-      # 'hurs' is instead sampled 6-hourly at a specified time point within the
-      # time period (03:00, 09:00, 15:00, 21:00). For the observation times to
-      # line up with those of other variables, hurs must be normalized. To do so
-      # the rolling mean of time & value is computed for every row pair of hurs
-      if (nc_var == "hurs") {
-        # Advance the observation time by 3 hours (which is the same as
-        # averaging the times of the current and next six-hourly observations)
-        set(x = dt_apt, j = "obs", value = dt_apt[, obs] + 3600L * 3L)
-        # Average the current and next observation values
-        set(
-          x     = dt_apt,
-          j     = "val",
-          value = frollmean(x = dt_apt[, val], n = 2L, align = "left")
-        )
-        # The last value of 'hurs' for every NetCDF file and airport (365.25
-        # days x 5 years x 4 daily observations = every 7,305th observation)
-        # would be empty as a result of the left-centered rolling mean, so we
-        # impute it by carrying the last observation forward ("locf")
-        setnafill(x = dt_apt, type = "locf", cols = "val")
-      }
-
       # Remove cases beyond the time horizon
       return(subset(x = dt_apt, subset = obs < horizon))
 
