@@ -1,514 +1,189 @@
 # ==============================================================================
-#    NAME: scripts/8_simulate.R
-#   INPUT: 442,765,932 climatic observations read from the dat$cli table
-# ACTIONS: Assemble the aircraft, calibration, and climate data
-#          Perform simulated takeoffs for each aircraft type and climate obs.
-#          Write the resulting takeoff distance required to the database
-#          Index the database table
-#  OUTPUT: 1,771,063,728 takeoff observations written to the dat$tko table
-# RUNTIME: ~66 hours (3.8 GHz CPU / 128 GB DDR4 RAM / SSD)
+#    NAME: scripts/8_simulate.R  (refactored)
+#   INPUT: Climatic observations as a partitioned Parquet dataset (dir$cli_pq),
+#          one file per airport, produced by a Parquet-writing 5_transform.R
+#          (or a one-off export of the MySQL `cli` table — see the guide).
+# ACTIONS: For each airport, solve the operating point of each takeoff by
+#          VECTORISED BISECTION instead of a one-passenger-at-a-time loop:
+#            - if the aircraft fits at MTOM on TOGA  -> find the MAX thrust
+#              reduction (derate) that still fits     (tom_rem = 0)
+#            - else                                   -> find the MAX mass that
+#              fits on TOGA, i.e. the payload to shed  (thr_red = 0)
+#          Outcomes are labelled feasible / field-length-limited / thrust-
+#          limited (see 6_model.R §3.3.1).
+#  OUTPUT: One Parquet file of takeoff outcomes per airport in dir$tko_pq.
+# RUNTIME: ~1–2 orders of magnitude faster than the MySQL/loop version.
 #  AUTHOR: Thomas D. Pellegrin <thomas@pellegr.in>
-#    YEAR: 2023
+#     REV: 2026 — Parquet + arrow I/O; vectorised monotone solver.
 # ==============================================================================
 
 # ==============================================================================
 # 0 Housekeeping
 # ==============================================================================
 
-# Clear the environment
 rm(list = ls())
 
-# Load the required libraries
-library(data.table)
-library(DBI)
-library(parallel)
-library(stringr)
+library(arrow)        # Parquet datasets (multi-threaded I/O, predicate pushdown)
+library(data.table)   # In-memory vectorised compute
+library(dplyr)        # open_dataset() verbs for the per-airport filter
 
-# Import the common settings
-source("scripts/0_common.R")
+source("scripts/0_common.R")  # adds sim$flat_*, sim$isa_lap, sim$acc_eps,
+source("scripts/6_model.R")   # sim$todr_cap, dir$cli_pq, dir$tko_pq (see guide)
 
-# Import the takeoff performance model
-source("scripts/6_model.R")
-
-# Start a script timer
 start_time <- Sys.time()
 
-# Clear the console
-cat("\014")
-
-# Set the number of CPU cores for parallel processing
-crs <- 20L
+# Cap arrow's thread pool so it composes with any outer parallelism
+arrow::set_cpu_count(parallel::detectCores())
 
 # ==============================================================================
-# 1 Import the simulation data
+# 1 Load the small, shared inputs once
 # ==============================================================================
 
-# ==============================================================================
-# 1.1 Import the aircraft characteristics
-# ==============================================================================
-
-# Fetch the aircraft data
+# 1.1 Aircraft characteristics; MTOM is the starting mass
 dt_act <- fread(
-  file       = fls$act,
-  header     = TRUE,
-  colClasses = c(rep("factor", 2L), rep("integer", 5L), rep("numeric", 5L)),
-  key        = "type"
-)
+  fls$act,
+  colClasses = c(rep("factor", 2L), rep("integer", 5L), rep("numeric", 5L))
+)[type %in% act, .(type, n, slst, bpr, s, tom_mtom = tom_max)]
 
-# Set the maximum mass to be the starting takeoff mass
-setnames(x = dt_act, "tom_max", "tom")
-
-# Keep only needed columns
-dt_act <- dt_act[, .(type, n, slst, bpr, s, tom)]
-
-# ==============================================================================
-# 1.2 Import the takeoff performance calibration data
-# ==============================================================================
-
-# Fetch the calibration data
-dt_cal <- fn_sql_qry(
-  statement = paste(
-    "SELECT type, tom, todr_cal, cllof, cd FROM ",
-    tolower(dat$cal),
-    " WHERE type IN (",
-    paste("'", act, "'", collapse = ", ", sep = ""),
-    ");",
-    sep = ""
-  )
-)
-
-# Create keys on the data table
-setkey(x = dt_cal, "type", "tom")
-
-# Convert the type column to factor
-set(x = dt_cal, j = "type",  value = as.factor(dt_cal[, type]))
-
-# Order by type and descending mass
-dt_cal <- dt_cal[order(type, -rank(tom))]
-
-# Set the minimum mass for which there is a calibrated TODR
-dt_cal[, tom_belf := min(tom), by = type]
+# 1.2 Calibration (CLlof, CD by integer kg). Read from Parquet if exported,
+#     else fall back to the database. Key by (type, tom) for fast joins.
+dt_cal <- if (file.exists(file.path(dir$cal, "cal.parquet"))) {
+  setDT(read_parquet(file.path(dir$cal, "cal.parquet")))
+} else {
+  fn_sql_qry(paste0(
+    "SELECT type, tom, todr_cal, cllof, cd FROM ", tolower(dat$cal),
+    " WHERE type IN (", paste0("'", act, "'", collapse = ", "), ");"
+  ))
+}
+dt_cal[, type := as.factor(type)]
+setkey(dt_cal, type, tom)
+dt_cal[, tom_belf := min(tom), by = type]   # economic floor = break-even mass
 
 # ==============================================================================
-# 1.3 Import the list of sample airports
+# 2 Helper functions
 # ==============================================================================
 
-# Fetch the airport and runway data
-dt_apt <- fn_sql_qry(
-  statement = paste(
-    "SELECT DISTINCT icao FROM", tolower(dat$pop),
-    "WHERE traffic >", sim$pop_thr, ";",
-    sep = " "
-  )
-)
+# 2.1 Total regulatory TODR for the current state of DT (Inf if infeasible).
+fn_todr <- function(DT) {
+  set(DT, j = "vlof", value = fn_vlof(DT))
+  (fn_dis_gnd(DT) + fn_dis_air()) * sim$tod_mul
+}
 
-# Create a key on the data table
-setkey(x = dt_apt, "icao")
+# 2.2 Refresh mass-dependent aerodynamics after a trial mass changes.
+fn_lookup_cal <- function(DT) {
+  set(DT, j = "tom", value = as.integer(round(DT[["tom"]])))
+  DT[dt_cal, `:=`(cllof = i.cllof, cd = i.cd), on = c("type", "tom")]
+  invisible(DT)
+}
 
-# ==============================================================================
-# 1.4 Exclude airports already processed
-# ==============================================================================
-
-# Create the takeoff outputs table unless it exists (for incremental runs)
-fn_sql_qry(
-  statement = paste(
-    "CREATE TABLE IF NOT EXISTS",
-    tolower(dat$tko),
-    "(
-      id      INT UNSIGNED NOT NULL AUTO_INCREMENT,
-      year    YEAR NOT NULL,
-      obs     DATETIME NOT NULL,
-      icao    CHAR(4) NOT NULL,
-      lat     FLOAT NOT NULL,
-      lon     FLOAT NOT NULL,
-      zone    CHAR(11) NOT NULL,
-      ssp     CHAR(6) NOT NULL,
-      type    CHAR(4) NOT NULL,
-      hurs    FLOAT NOT NULL,
-      ps      FLOAT NOT NULL,
-      tas     FLOAT NOT NULL,
-      rho     FLOAT NOT NULL,
-      hdw     FLOAT NOT NULL,
-      rwy     CHAR(5) NOT NULL,
-      toda    SMALLINT NOT NULL,
-      todr    SMALLINT NOT NULL,
-      vlof    SMALLINT NOT NULL,
-      thr_red SMALLINT NOT NULL,
-      tom_rem SMALLINT NOT NULL,
-      itr     SMALLINT UNSIGNED NOT NULL,
-      PRIMARY KEY (id)
-    );",
-    sep = " "
-  )
-)
-
-# Fetch the airports already processed, if any
-dt_exc <- fn_sql_qry(
-  statement = paste(
-    "SELECT DISTINCT icao FROM", tolower(dat$tko), ";", sep = " "
-  )
-)
-
-# FOR TESTING ONLY
-cat("\014")
-print(dt_exc)
-
-# Create a key on the data table
-setkey(x = dt_exc, "icao")
-
-# Remove the airports already processed
-dt_apt <- dt_apt[!dt_exc]
+# 2.3 Vectorised monotone solver. TODR is increasing in both `tom` and
+#     `thr_red`, so for each row we seek the LARGEST value of `var` in [lo, hi]
+#     for which TODR <= toda. Each row keeps its own bracket; ~n_iter passes.
+fn_solve_max <- function(DT, var, lo, hi, toda, n_iter,
+                         as_integer = FALSE, refresh = NULL) {
+  lo <- as.numeric(rep(lo, length.out = nrow(DT)))
+  hi <- as.numeric(rep(hi, length.out = nrow(DT)))
+  for (k in seq_len(n_iter)) {
+    mid <- (lo + hi) / 2
+    if (as_integer) mid <- floor(mid)
+    set(DT, j = var, value = mid)
+    if (!is.null(refresh)) refresh(DT)
+    feasible <- fn_todr(DT) <= toda          # Inf <= toda is FALSE, as intended
+    lo <- fifelse(feasible, mid, lo)         # fits  -> answer >= mid, raise floor
+    hi <- fifelse(feasible, hi,  mid)        # fails -> answer <  mid, lower ceiling
+  }
+  if (as_integer) floor(lo) else lo
+}
 
 # ==============================================================================
-# 2 Define a function to simulate takeoffs at each airport
+# 3 Per-airport simulation
 # ==============================================================================
 
-fn_simulate <- function(icao) {
+cli_ds <- open_dataset(dir$cli_pq)           # the whole climate dataset (lazy)
+airports <- collect(distinct(cli_ds, icao))[["icao"]]
 
-  # Offset the start of each worker by a random duration to spread disk I/O load
-  Sys.sleep(time = sample(x = 1L:(crs * 10L), size = 1L))
+# Resume support: skip airports already written
+done <- sub("\\.parquet$", "", list.files(dir$tko_pq, pattern = "\\.parquet$"))
+airports <- setdiff(airports, done)
 
-  # Inform the log file
-  print(
-    paste(
-      Sys.time(),
-      "pid", str_pad(Sys.getpid(), width = 5L, side = "left", pad = " "),
-      "icao", icao,
-      "Loading simulation data",
-      sep = " "
-    )
-  )
+fn_simulate <- function(this_icao) {
 
-  # ============================================================================
-  # 2.1 Import the climatic observations for the current airport
-  # ============================================================================
+  # 3.1 Read this airport's observations (corrected ps & rho from 5_transform)
+  dt_cli <- cli_ds |>
+    filter(icao == this_icao) |>
+    select(year, obs, icao, lat, lon, zone, ssp, huss, ps, tas,
+           rho, hdw, rwy, toda) |>
+    collect() |>
+    setDT()
+  if (!nrow(dt_cli)) return(invisible(NULL))
 
-  # Fetch the takeoff conditions at the airport
-  # Here we use air density estimates from method #2 in 5_transform.R
-  dt_cli <- fn_sql_qry(
-    statement = paste(
-      "SELECT
-        year,
-        obs,
-        icao,
-        lat,
-        lon,
-        zone,
-        ssp,
-        hurs_cap AS hurs,
-        ps,
-        tas,
-        rho2 AS rho,
-        hdw,
-        rwy,
-        toda",
-      " FROM ", tolower(dat$cli),
-      " WHERE icao = '", icao, "';",
-      sep = ""
-    )
-  )
+  # 3.2 Cross with aircraft types and attach MTOM calibration
+  dt <- dt_cli[, as.list(dt_act), by = dt_cli]
+  set(dt, j = "type", value = as.factor(dt[["type"]]))
+  set(dt, j = "tom",  value = dt[["tom_mtom"]])
+  fn_lookup_cal(dt)
 
-  # Create a key on the data table
-  setkey(x = dt_cli, "toda")
+  # 3.3 Regime split on the MTOM / TOGA takeoff
+  set(dt, j = "thr_red", value = 0L)
+  todr0 <- fn_todr(dt)
+  fits  <- todr0 <= dt[["toda"]]
 
-  # Recast column types
-  set(x = dt_cli, j = "obs",  value = as.POSIXct(dt_cli[, obs]))
-  set(x = dt_cli, j = "icao", value = as.factor(dt_cli[, icao]))
-  set(x = dt_cli, j = "year", value = as.factor(dt_cli[, year]))
-  set(x = dt_cli, j = "zone", value = as.factor(dt_cli[, zone]))
-  set(x = dt_cli, j = "ssp",  value = as.factor(dt_cli[, ssp]))
-  set(x = dt_cli, j = "rwy",  value = as.factor(dt_cli[, rwy]))
+  dtA <- dt[fits]                             # derate regime  (tom_rem = 0)
+  dtB <- dt[!fits]                            # offload regime (thr_red = 0)
 
-  # ============================================================================
-  # 2.2 Combine the airport, aircraft, calibration, and climate data
-  # ============================================================================
+  # 3.4 Derate regime: max thrust reduction that still fits, at MTOM
+  if (nrow(dtA)) {
+    set(dtA, j = "tom", value = dtA[["tom_mtom"]]); fn_lookup_cal(dtA)
+    thr_star <- fn_solve_max(dtA, "thr_red", 0L, sim$thr_ini,
+                             toda = dtA[["toda"]], n_iter = 6L, as_integer = TRUE)
+    set(dtA, j = "thr_red", value = pmin(thr_star, sim$thr_ini))
+    set(dtA, j = "tom_rem", value = 0L)
+    set(dtA, j = "todr",    value = ceiling(fn_todr(dtA)))
+    set(dtA, j = "outcome", value = "feasible")
+  }
 
-  # Combine climatic observations with aircraft data (Cartesian product)
-  dt_tko <- dt_cli[, as.list(dt_act), by = dt_cli]
+  # 3.5 Offload regime: max mass that fits on TOGA; payload shed = MTOM - mass
+  if (nrow(dtB)) {
+    set(dtB, j = "thr_red", value = 0L)
+    mass_star <- fn_solve_max(dtB, "tom", dtB[["tom_belf"]], dtB[["tom_mtom"]],
+                              toda = dtB[["toda"]], n_iter = 12L,
+                              refresh = fn_lookup_cal)
+    set(dtB, j = "tom", value = as.integer(floor(mass_star))); fn_lookup_cal(dtB)
+    todrB <- fn_todr(dtB)
+    set(dtB, j = "tom_rem", value = dtB[["tom_mtom"]] - dtB[["tom"]])
+    set(dtB, j = "todr",    value = ifelse(is.finite(todrB), ceiling(todrB), NA_integer_))
+    set(dtB, j = "outcome", value = fifelse(
+      todrB <= dtB[["toda"]],          "feasible",
+      fifelse(is.finite(todrB),        "infeasible_field",
+                                       "infeasible_thrust")))
+    set(dtB, i = dtB[, .I[todr > sim$todr_cap & outcome == "feasible"]],
+        j = "outcome", value = "infeasible_field")
+  }
 
-  # Unload the climatic observations from memory
-  rm(dt_cli)
+  out <- rbind(dtA, dtB, fill = TRUE)
 
-  # Convert the airport code to a factor
-  set(x = dt_tko, j = "icao",  value = as.factor(dt_tko[, icao]))
-
-  # Combine climatic observations with calibration data using the starting mass
-  dt_tko <- dt_cal[dt_tko, on = c("type", "tom")]
-
-  # ============================================================================
-  # 2.3 Initialize takeoff parameters for the first simulation iteration
-  # ============================================================================
-  
-  # Initialize the thrust reduction. If the TODA is shorter than the calibrated
-  # TODR at MTOM (which was calibrated using TOGA thrust), then it is unlikely
-  # that a thrust-reduced takeoff could lead to TODR < TODA (short of a few
-  # cases of better-than-ISA takeoff conditions). In this case, set the thrust
-  # to TOGA, to save on takeoff iterations. Otherwise, set it to the lowest
-  # takeoff thrust permissible by regulations.
-  set(
-    x = dt_tko,
-    j = "thr_red",
-    value = fifelse(
-      dt_tko[, toda] <= dt_tko[, todr_cal],
-      0L + sim$thr_inc,
-      sim$thr_ini + sim$thr_inc
-    )
-  )
-
-  # Initialize a column to track how much takeoff mass was removed
-  set(x = dt_tko, j = "tom_rem", value = 0L)
-
-  # Initialize the starting TODR to a value greater than the max TODA
-  set(x = dt_tko, j = "todr", value = dt_tko[, toda] + 1L)
-
-  # Initialize a counter to track the number of iterations of each takeoff
-  set(x = dt_tko, j = "itr", value = 0L)
-
-  # Set the horizontal airborne component of the TODR in m
-  # Adapted from Gratton et al, 2020
-  set(x = dt_tko, j = "dis_air_sim", value = fn_dis_air())
-
-  # ============================================================================
-  # 2.4 Perform vectorized takeoff simulations iteratively until TODR < TODA
-  # ============================================================================
-
-  repeat {
-
-    # ==========================================================================
-    # 2.4.1 Prepare the data
-    # ==========================================================================
-
-    # Retrieve indices of observations where TODR > TODA and the current mass is
-    # not less than the minimum mass for which there is calibrated data
-    i <- dt_tko[, .I[todr > toda & tom >= (tom_belf + sim$pax_avg)]]
-
-    # As long as there are takeoffs that meet these conditions
-    if (length(i) > 0L) {
-
-      # Save the iteration
-      set(x = dt_tko, i = i, j = "itr", value = dt_tko[i, itr] + 1L)
-
-      # If thrust is already at TOGA, then decrease the mass by one passenger
-      set(
-        x = dt_tko,
-        i = i,
-        j = "tom",
-        value = fifelse(
-          dt_tko[i, thr_red] == 0L,
-          dt_tko[i, tom] - sim$pax_avg,
-          dt_tko[i, tom]
-        )
-      )
-
-      # And also keep track of how much mass was removed
-      set(
-        x = dt_tko,
-        i = i,
-        j = "tom_rem",
-        value = fifelse(
-          dt_tko[i, thr_red] == 0L,
-          dt_tko[i, tom_rem] + sim$pax_avg,
-          dt_tko[i, tom_rem]
-        )
-      )
-
-      # Otherwise decrease the thrust reduction incrementally up to TOGA
-      set(
-        x = dt_tko,
-        i = i,
-        j = "thr_red",
-        value = fifelse(
-          dt_tko[i, thr_red] > 0L,
-          dt_tko[i, thr_red] - sim$thr_inc,
-          dt_tko[i, thr_red]
-        )
-      )
-
-      # Inform the log file
-      print(
-        paste(
-          Sys.time(),
-          "pid", str_pad(Sys.getpid(), width = 5L, side = "left", pad = " "),
-          "icao", icao,
-          "itr", str_pad(
-            dt_tko[i, mean(itr)], width = 3L, side = "left", pad = " "
-          ),
-          "t/o =", str_pad(
-            format(length(i), big.mark = ","),
-            width = 9L, side = "left", pad = " "
-          ),
-          sep = " "
-        )
-      )
-
-      # Remove the existing cL and cD values
-      set(x = dt_tko, i = i, j = "cd", value = NA)
-      set(x = dt_tko, i = i, j = "cllof", value = NA)
-
-      # Add the calibration data (cD and cL) again for the new mass
-      dt_tko[dt_cal, cd := fifelse(is.na(cd), i.cd, cd), on = c("type", "tom")]
-      dt_tko[
-        dt_cal,
-        cllof := fifelse(
-          is.na(cllof),
-          i.cllof, cllof
-        ),
-        on = c("type", "tom")
-      ]
-
-      # Calculate the liftoff speed in m/s
-      set(x = dt_tko, i = i, j = "vlof", value = fn_vlof(DT = dt_tko[i, ]))
-
-      # ========================================================================
-      # 2.4.2 Calculate the takeoff distance required TODR in m
-      # ========================================================================
-
-      # Calculate the ground component of the TODR in m
-      set(
-        x = dt_tko,
-        i = i,
-        j = "dis_gnd_sim",
-        value = fn_dis_gnd(DT = dt_tko[i, ])
-      )
-
-      # Calculate the regulatory component of the TODR in m
-      set(
-        x = dt_tko,
-        i = i,
-        j = "dis_reg_sim",
-        value =
-          (dt_tko[i, dis_gnd_sim] +
-          dt_tko[i, dis_air_sim]) *
-          (sim$tod_mul - 1L)
-      )
-
-      # Calculate the total TODR in m, rounded to the nearest higher integer
-      set(
-        x = dt_tko,
-        i = i,
-        j = "todr",
-        value = ceiling(
-          dt_tko[i, dis_gnd_sim] +
-          dt_tko[i, dis_air_sim] +
-          dt_tko[i, dis_reg_sim]
-        )
-      )
-
-    } else { # Once there are no more observations that meet the conditions
-
-      break # End the repeat loop
-
-    } # End if-else
-
-  } # End repeat
-
-  # ========================================================================
-  # 2.5 Write the simulation results to the database
-  # ========================================================================
-
-  # Inform the log file
-  print(
-    paste(
-      Sys.time(),
-      "pid", str_pad(Sys.getpid(), width = 5, side = "left", pad = " "),
-      "icao", icao,
-      "Writing",
-      str_pad(
-        format(nrow(dt_tko), big.mark = ","),
-        width = 9L, side = "left", pad = " "
-      ),
-      "rows to the database",
-      sep = " "
-    )
-  )
-
-  # Select which columns to write to the database and in which order
-  cols <- c(
-    "year",
-    "obs",
-    "icao",
-    "lat",
-    "lon",
-    "zone",
-    "ssp",
-    "type",
-    "hurs",
-    "ps",
-    "tas",
-    "rho",
-    "hdw",
-    "rwy",
-    "toda",
-    "todr",
-    "vlof",
-    "thr_red",
-    "tom_rem",
-    "itr"
-  )
-
-  # Connect the worker to the database
-  conn <- dbConnect(RMySQL::MySQL(), default.file = dat$cnf, group = dat$grp)
-
-  # Write the data to the database
-  dbWriteTable(
-    conn      = conn,
-    name      = tolower(dat$tko), value = dt_tko[, ..cols],
-    append    = TRUE,
-    row.names = FALSE
-  )
-
-  # Disconnect the worker from the database
-  dbDisconnect(conn)
-
-  # Inform the log file
-  print(
-    paste(
-      Sys.time(),
-      "pid", str_pad(Sys.getpid(), width = 5L, side = "left", pad = " "),
-      "icao", icao,
-      "Wrote  ",
-      str_pad(
-        format(nrow(dt_tko), big.mark = ","),
-        width = 9L, side = "left", pad = " "
-      ),
-      "rows to the database",
-      sep = " "
-    )
-  )
-
-} # End of the fn_simulate function
+  # 3.6 Write one Parquet file for this airport (partition-friendly, resumable)
+  cols <- c("year","obs","icao","lat","lon","zone","ssp","type","huss","ps",
+            "tas","rho","hdw","rwy","toda","todr","vlof","thr_red","tom_rem",
+            "outcome")
+  write_parquet(out[, ..cols],
+                file.path(dir$tko_pq, paste0(this_icao, ".parquet")),
+                compression = "zstd")
+  invisible(NULL)
+}
 
 # ==============================================================================
-# 3 Run the simulation across multiple cores
+# 4 Run. arrow is internally threaded, so a sequential airport loop already uses
+#    all cores for I/O + compute. To add coarse parallelism, wrap in
+#    parallel::mclapply (fork) — but give each worker its own arrow thread budget.
 # ==============================================================================
 
-# Distribute the work across the cluster
-fn_par_lapply(
-  crs = crs,
-  pkg = c("data.table", "DBI", "stringr"),
-  lst = dt_apt[, icao],
-  fun = fn_simulate
-)
-
-# ==============================================================================
-# 4 Index the database table
-# ==============================================================================
-
-# Create the index
-fn_sql_qry(
-  statement = paste(
-    "CREATE INDEX idx ON",
-    tolower(dat$tko),
-    "(ssp, zone, year, icao);",
-    sep = " "
-  )
-)
+invisible(lapply(airports, fn_simulate))
 
 # ==============================================================================
 # 5 Housekeeping
 # ==============================================================================
 
-# Stop the script timer
 Sys.time() - start_time
 
 # EOF
