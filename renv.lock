@@ -9,12 +9,6 @@
     ]
   },
   "Packages": {
-    "DBI": {
-      "Package": "DBI",
-      "Version": "1.3.0",
-      "Source": "Repository",
-      "Repository": "CRAN"
-    },
     "KernSmooth": {
       "Package": "KernSmooth",
       "Version": "2.23-26",
@@ -42,12 +36,6 @@
     "RColorBrewer": {
       "Package": "RColorBrewer",
       "Version": "1.1-3",
-      "Source": "Repository",
-      "Repository": "CRAN"
-    },
-    "RMySQL": {
-      "Package": "RMySQL",
-      "Version": "0.11.3",
       "Source": "Repository",
       "Repository": "CRAN"
     },

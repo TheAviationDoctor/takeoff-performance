@@ -20,16 +20,13 @@ the [CRAN archive](https://cran.r-project.org/src/contrib/Archive/): `PCICt`,
 `ncdf4.helpers`, `epwshiftr`, and `rgeos`. `renv::restore()` fetches them from
 the archive automatically; if that fails on your platform, install them manually,
 e.g. `renv::install("rgeos@0.6-4")`. Note that `ncdf4` requires the system NetCDF
-library and `RMySQL` requires the MySQL/MariaDB client library to be present.
+library to be present.
 
-## Database credentials
+## Data storage
 
-The pipeline reads its MySQL connection parameters from a local `.my.cnf` file
-(group `[phd]`), used by `DBI::dbConnect(RMySQL::MySQL(), default.file = ".my.cnf",
-group = "phd")` in `scripts/0_common.R`. This file holds a real password and is
-**git-ignored** — it must never be committed. Copy `.my.cnf.example` to `.my.cnf`
-and fill in your own host, user, and password:
-
-```sh
-cp .my.cnf.example .my.cnf
-```
+The pipeline is file-based: each stage reads and writes [Apache
+Parquet](https://parquet.apache.org/) via the `arrow` package — no database is
+required. The intermediate datasets live under `data/` (`population.parquet`,
+`imp_parquet/`, `cli_parquet/`, `tko_parquet/`, `cal.parquet`) and are
+git-ignored. Stages are resumable where a dataset is written one file per
+airport (`cli_parquet/`, `tko_parquet/`).
