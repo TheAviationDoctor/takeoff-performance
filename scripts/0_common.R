@@ -247,4 +247,29 @@ fn_sql_qry <- function(statement) {
 
 }
 
+# ==============================================================================
+# 7.3 Function to print a timestamped worker log line. Parameters:
+# ... = message tokens, joined to the standard prefix with single spaces
+# ==============================================================================
+
+fn_log <- function(...) {
+
+  # Prefix every line with the timestamp and the zero-padded worker PID
+  print(
+    paste(
+      Sys.time(),
+      "pid",
+      stringr::str_pad(
+        Sys.getpid(),
+        width = 5L,
+        side  = "left",
+        pad   = " "
+      ),
+      ...,
+      sep = " "
+    )
+  )
+
+}
+
 # EOF

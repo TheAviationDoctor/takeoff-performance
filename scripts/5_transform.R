@@ -120,21 +120,7 @@ fn_transform <- function(apt) {
   Sys.sleep(time = sample(x = 1L:(crs * 10L), size = 1L))
 
   # Inform the log file
-  print(
-    paste(
-      Sys.time(),
-      "pid",
-      stringr::str_pad(
-        Sys.getpid(),
-        width = 5L,
-        side  = "left",
-        pad   = " "
-      ),
-      apt,
-      "(1/6) Fetching climate observations...",
-      sep = " "
-    )
-  )
+  fn_log(apt, "(1/6) Fetching climate observations...")
 
   # ============================================================================
   # 3.1 Fetch and prepare the climate data for the current airport
@@ -165,24 +151,9 @@ fn_transform <- function(apt) {
   set(x = dt_nc, j = "var",  value = as.factor(dt_nc[, var]))
 
   # Inform the log file
-  print(
-    paste(
-      Sys.time(),
-      "pid",
-      stringr::str_pad(
-        Sys.getpid(),
-        width = 5L,
-        side  = "left",
-        pad   = " "
-      ),
-      apt,
-      "(2/6) Pivoting",
-      format(x = nrow(dt_nc), big.mark = ","),
-      "observations...",
-      sep = " "
-    )
-  )
-  
+  fn_log(apt, "(2/6) Pivoting", format(x = nrow(dt_nc), big.mark = ","),
+    "observations...")
+
   # Pivot the dataset from long to wide format
   dt_nc <- dcast.data.table(
     data      = dt_nc,
@@ -219,23 +190,8 @@ fn_transform <- function(apt) {
   # ============================================================================
 
   # Inform the log file
-  print(
-    paste(
-      Sys.time(),
-      "pid",
-      stringr::str_pad(
-        Sys.getpid(),
-        width = 5L,
-        side  = "left",
-        pad   = " "
-      ),
-      apt,
-      "(3/6) Calculating air density for",
-      format(x = nrow(dt_nc), big.mark = ","),
-      "observations...",
-      sep = " "
-    )
-  )
+  fn_log(apt, "(3/6) Calculating air density for",
+    format(x = nrow(dt_nc), big.mark = ","), "observations...")
 
   # ============================================================================
   # 3.3.1 Air density from specific humidity (huss) [REV. 2026]
@@ -272,23 +228,8 @@ fn_transform <- function(apt) {
   dt_nc <- merge(x = dt_nc, y = dt_rwys, by = "icao", allow.cartesian = TRUE)
 
   # Inform the log file
-  print(
-    paste(
-      Sys.time(),
-      "pid",
-      stringr::str_pad(
-        Sys.getpid(),
-        width = 5L,
-        side  = "left",
-        pad   = " "
-      ),
-      apt,
-      "(4/6) Calculating headwinds for",
-      format(x = nrow(dt_nc), big.mark = ","),
-      "observations...",
-      sep = " "
-    )
-  )
+  fn_log(apt, "(4/6) Calculating headwinds for",
+    format(x = nrow(dt_nc), big.mark = ","), "observations...")
 
   # ============================================================================
   # 3.5 Calculate the wind vector for each runway
@@ -321,23 +262,8 @@ fn_transform <- function(apt) {
   # ============================================================================
 
   # Inform the log file
-  print(
-    paste(
-      Sys.time(),
-      "pid",
-      stringr::str_pad(
-        Sys.getpid(),
-        width = 5L,
-        side  = "left",
-        pad   = " "
-      ),
-      apt,
-      "(5/6) Writing",
-      format(x = nrow(dt_nc), big.mark = ","),
-      "observations to the database...",
-      sep = " "
-    )
-  )
+  fn_log(apt, "(5/6) Writing", format(x = nrow(dt_nc), big.mark = ","),
+    "observations to the database...")
 
   # Create the year column
   set(
@@ -369,23 +295,8 @@ fn_transform <- function(apt) {
   dbDisconnect(conn)
 
   # Inform the log file
-  print(
-    paste(
-      Sys.time(),
-      "pid",
-      stringr::str_pad(
-        Sys.getpid(),
-        width = 5L,
-        side  = "left",
-        pad   = " "
-      ),
-      apt,
-      "(6/6) Written",
-      format(x = nrow(dt_nc), big.mark = ","),
-      "observations to the database.",
-      sep = " "
-    )
-  )
+  fn_log(apt, "(6/6) Written", format(x = nrow(dt_nc), big.mark = ","),
+    "observations to the database.")
 
 } # End of the fn_transform function
 

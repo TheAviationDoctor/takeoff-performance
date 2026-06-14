@@ -168,21 +168,7 @@ fn_import <- function(nc_file) {
   Sys.sleep(time = sample(1:(crs * 10L), 1L))
 
   # Inform the log file
-  print(
-    paste(
-      Sys.time(),
-      " pid ",
-      stringr::str_pad(
-        Sys.getpid(),
-        width = 5L,
-        side  = "left",
-        pad   = " "
-      ),
-      " is processing ", basename(nc_file),
-      "...",
-      sep = ""
-    )
-  )
+  fn_log("is processing", paste0(basename(nc_file), "..."))
 
   # Open the NetCDF file
   nc <- ncdf4::nc_open(
