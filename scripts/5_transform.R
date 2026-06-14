@@ -69,7 +69,7 @@ dt_smp[, hdg := as.numeric(substr(rwy, 3L, 4L)) * 10L]
 
 # For two runways with the same magnetic heading at a given airport (e.g. RWY26R
 # and RWY26L), keep the one with the longest TODA (i.e. the most favorable case)
-dt_smp <- dt_smp[, .SD[which.max(toda)], by = .(icao, hdg)]
+dt_smp <- dt_smp[dt_smp[, .I[which.max(toda)], by = .(icao, hdg)]$V1]
 
 # Return the resulting count of runways to the console
 nrow(dt_smp)
@@ -314,7 +314,7 @@ fn_transform <- function(apt) {
 
   # Keep only the runway with the maximum headwind speed (presumed to be
   #  the active runway) for each observation and experiment (SSP)
-  dt_nc <- dt_nc[, .SD[which.max(hdw)], by = .(obs, ssp)]
+  dt_nc <- dt_nc[dt_nc[, .I[which.max(hdw)], by = .(obs, ssp)]$V1]
 
   # ============================================================================
   # 3.6 Write the data in wide format to the database
